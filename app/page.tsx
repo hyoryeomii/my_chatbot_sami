@@ -15,35 +15,36 @@ interface ChatSession {
   title: string;
   messages: Message[];
   reasoningEffort: string;
+  selectedModel: string;
 }
 
 export default function Home() {
   const [input, setInput] = useState('');
   const [reasoningEffort, setReasoningEffort] = useState('medium');
+  const [selectedModel, setSelectedModel] = useState('빠른 모델 플러스');
   const [loading, setLoading] = useState(false);
-  const [showThinking, setShowThinking] = useState<{ [key: number]: boolean }>({});
   
-  // 사이드바 토글 상태 (열림/닫힘)
+  // 기본적으로 생각 박스가 열려있도록 상태 관리 (기본값 undefined/true 일 때 열림)
+  const [thinkingCollapsed, setThinkingCollapsed] = useState<{ [key: number]: boolean }>({});
+  
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
-  // 대화 목록 및 세션 관리
   const [sessions, setSessions] = useState<ChatSession[]>([
     {
       id: 'session-1',
       title: '새 대화',
       messages: [],
       reasoningEffort: 'medium',
+      selectedModel: '빠른 모델 플러스',
     },
   ]);
   const [currentSessionId, setCurrentSessionId] = useState<string>('session-1');
 
-  // 메인 스크롤 컨테이너 참조
   const chatContainerRef = useRef<HTMLDivElement>(null);
 
   const currentSession = sessions.find((s) => s.id === currentSessionId) || sessions[0];
   const messages = currentSession ? currentSession.messages : [];
 
-  // 부드러운 스크롤 (오른쪽 스크롤바 기준)
   useEffect(() => {
     if (chatContainerRef.current) {
       chatContainerRef.current.scrollTo({
@@ -68,7 +69,6 @@ export default function Home() {
     );
   };
 
-  // LLM 제목 생성 API 호출 함수
   const fetchLLMTitle = async (sessionId: string, userPrompt: string) => {
     try {
       const res = await fetch('/api/title', {
@@ -87,7 +87,6 @@ export default function Home() {
     }
   };
 
-  // 새 대화 시작하기 (중복 무한 생성 방지)
   const handleNewChat = () => {
     const emptySession = sessions.find((s) => s.messages.length === 0);
     if (emptySession) {
@@ -101,13 +100,18 @@ export default function Home() {
       title: '새 대화',
       messages: [],
       reasoningEffort: reasoningEffort,
+      selectedModel: selectedModel,
     };
     setSessions((prev) => [newSession, ...prev]);
     setCurrentSessionId(newId);
   };
 
+  // 접기/펼치기 토글 함수
   const toggleThinking = (index: number) => {
-    setShowThinking((prev) => ({ ...prev, [index]: !prev[index] }));
+    setThinkingCollapsed((prev) => ({
+      ...prev,
+      [index]: !prev[index], // true면 접힘, false/undefined면 열림
+    }));
   };
 
   const sendMessage = async () => {
@@ -125,12 +129,15 @@ export default function Home() {
     setInput('');
     setLoading(true);
 
-    // 첫 메시지일 때 제목 생성 백그라운드 호출
     if (isFirstMessage) {
       fetchLLMTitle(targetSessionId, currentInput);
     }
 
     const assistantIndex = newMessages.length;
+    
+    // AI 메시지 생성 시 기본적으로 생각을 열어둠 (thinkingCollapsed[assistantIndex] = false)
+    setThinkingCollapsed((prev) => ({ ...prev, [assistantIndex]: false }));
+
     updateCurrentSessionMessages((prev) => [
       ...prev,
       { role: 'assistant', content: '', reasoning: '' },
@@ -140,7 +147,11 @@ export default function Home() {
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: currentInput, reasoningEffort }),
+        body: JSON.stringify({
+          message: currentInput,
+          reasoningEffort,
+          model: selectedModel,
+        }),
       });
 
       if (!res.body) {
@@ -175,6 +186,7 @@ export default function Home() {
           try {
             const { reasoning, content } = JSON.parse(line);
 
+            // 실시간으로 reasoning 또는 content 상태 업데이트
             updateCurrentSessionMessages((prev) => {
               const updated = [...prev];
               const currentMsg = updated[assistantIndex];
@@ -258,7 +270,7 @@ export default function Home() {
       {/* 💬 2. 메인 채팅 영역 */}
       <main className="flex-1 flex flex-col h-screen bg-white relative overflow-hidden">
         {/* 상단 헤더 */}
-        <header className="px-6 py-4 flex items-center justify-between bg-white shrink-0 z-10">
+        <header className="px-6 py-4 flex items-center justify-between bg-white shrink-0 z-10 border-b border-gray-50">
           <div className="flex items-center gap-3">
             {!isSidebarOpen && (
               <button
@@ -273,17 +285,35 @@ export default function Home() {
             )}
           </div>
 
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-medium text-gray-400">추론 강도:</span>
-            <select
-              value={reasoningEffort}
-              onChange={(e) => setReasoningEffort(e.target.value)}
-              className="text-xs border-0 rounded-lg px-3 py-1.5 bg-gray-50 font-medium text-gray-600 focus:outline-none focus:ring-1 focus:ring-pink-200 cursor-pointer"
-            >
-              <option value="low">Low (빠른 응답)</option>
-              <option value="medium">Medium (기본 추론)</option>
-              <option value="high">High (심층 추론)</option>
-            </select>
+          <div className="flex items-center gap-4">
+            {/* 모델 선택 */}
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium text-gray-400">모델:</span>
+              <select
+                value={selectedModel}
+                onChange={(e) => setSelectedModel(e.target.value)}
+                className="text-xs border border-gray-200 rounded-lg px-3 py-1.5 bg-gray-50 font-medium text-gray-700 focus:outline-none focus:ring-1 focus:ring-pink-200 cursor-pointer hover:bg-gray-100 transition"
+              >
+                <option value="빠른 모델">빠른 모델</option>
+                <option value="빠른 모델 플러스">빠른 모델 플러스</option>
+                <option value="기본 모델 플러스">기본 모델 플러스</option>
+                <option value="생각하는 모델 플러스">생각하는 모델 플러스</option>
+              </select>
+            </div>
+
+            {/* 추론 강도 */}
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium text-gray-400">추론 강도:</span>
+              <select
+                value={reasoningEffort}
+                onChange={(e) => setReasoningEffort(e.target.value)}
+                className="text-xs border border-gray-200 rounded-lg px-3 py-1.5 bg-gray-50 font-medium text-gray-700 focus:outline-none focus:ring-1 focus:ring-pink-200 cursor-pointer hover:bg-gray-100 transition"
+              >
+                <option value="low">Low (빠른 응답)</option>
+                <option value="medium">Medium (기본 추론)</option>
+                <option value="high">High (심층 추론)</option>
+              </select>
+            </div>
           </div>
         </header>
 
@@ -296,64 +326,68 @@ export default function Home() {
               </div>
             )}
 
-            {messages.map((m, i) => (
-              <div key={i} className="flex flex-col space-y-2">
-                {/* 내 메시지 */}
-                {m.role === 'user' ? (
-                  <div className="flex justify-end">
-                    <div className="bg-pink-100/80 text-pink-950 px-4.5 py-3 rounded-2xl max-w-[80%] text-base leading-relaxed shadow-2xs whitespace-pre-wrap">
-                      {m.content}
-                    </div>
-                  </div>
-                ) : (
-                  /* 사미GPT 답변 */
-                  <div className="flex flex-col items-start pr-4 py-1 w-full">
-                    {/* 생각 보기 (CoT) */}
-                    {(m.reasoning || (loading && i === messages.length - 1)) && (
-                      <div className="mb-3">
-                        <button
-                          onClick={() => toggleThinking(i)}
-                          className="text-xs text-purple-600 font-medium bg-purple-50 hover:bg-purple-100 px-2.5 py-1 rounded-lg border border-purple-100 transition flex items-center gap-1.5"
-                        >
-                          🤖 {showThinking[i] ? '생각 접기' : '생각 보기'}
-                        </button>
+            {messages.map((m, i) => {
+              const isCollapsed = thinkingCollapsed[i] === true; // true일 때만 접힘, 기본값(false/undefined)은 열림 상태
 
-                        {showThinking[i] && (
-                          <div className="mt-2 p-3 bg-gray-50 rounded-xl text-sm text-gray-500 italic leading-relaxed whitespace-pre-wrap max-h-40 overflow-y-auto border border-gray-100">
-                            {m.reasoning || '추론 과정을 정리하고 있습니다...'}
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* 마크다운 & 표 렌더링 */}
-                    <div className="text-gray-800 text-base leading-relaxed w-full prose prose-base max-w-none">
-                      <ReactMarkdown
-                        remarkPlugins={[remarkGfm]}
-                        components={{
-                          table: ({ node, ...props }) => (
-                            <div className="overflow-x-auto my-3 border border-gray-100 rounded-lg">
-                              <table className="min-w-full divide-y divide-gray-100 text-sm" {...props} />
-                            </div>
-                          ),
-                          thead: ({ node, ...props }) => <thead className="bg-gray-50 text-gray-700 font-semibold" {...props} />,
-                          th: ({ node, ...props }) => <th className="px-3.5 py-2.5 text-left" {...props} />,
-                          td: ({ node, ...props }) => <td className="px-3.5 py-2.5 border-t border-gray-100 text-gray-600" {...props} />,
-                          p: ({ node, ...props }) => <p className="mb-2.5 last:mb-0 leading-relaxed" {...props} />,
-                          ul: ({ node, ...props }) => <ul className="list-disc pl-5 my-2 space-y-1" {...props} />,
-                          ol: ({ node, ...props }) => <ol className="list-decimal pl-5 my-2 space-y-1" {...props} />,
-                        }}
-                      >
+              return (
+                <div key={i} className="flex flex-col space-y-2">
+                  {/* 사용자 메시지 */}
+                  {m.role === 'user' ? (
+                    <div className="flex justify-end">
+                      <div className="bg-pink-100/80 text-pink-950 px-4.5 py-3 rounded-2xl max-w-[80%] text-base leading-relaxed shadow-2xs whitespace-pre-wrap">
                         {m.content}
-                      </ReactMarkdown>
+                      </div>
                     </div>
-                  </div>
-                )}
-              </div>
-            ))}
+                  ) : (
+                    /* AI 답변 */
+                    <div className="flex flex-col items-start pr-4 py-1 w-full">
+                      {/* 생각 보기/접기 영역 (기본적으로 펼쳐짐) */}
+                      {(m.reasoning || (loading && i === messages.length - 1)) && (
+                        <div className="mb-3 w-full">
+                          <button
+                            onClick={() => toggleThinking(i)}
+                            className="text-xs text-purple-600 font-medium bg-purple-50 hover:bg-purple-100 px-2.5 py-1 rounded-lg border border-purple-100 transition flex items-center gap-1.5"
+                          >
+                            🤖 {isCollapsed ? '생각 보기' : '생각 접기'}
+                          </button>
 
-            {/* 로딩 표시 */}
-            {loading && messages[messages.length - 1]?.content === '' && (
+                          {/* 생각 박스: 기본적으로 보임, 5줄 제한(max-h-[7.5rem] = 120px) 적용 */}
+                          {!isCollapsed && (
+                            <div className="mt-2 p-3 bg-gray-50 rounded-xl text-sm text-gray-500 italic leading-relaxed whitespace-pre-wrap max-h-[7.5rem] overflow-y-auto border border-gray-100 transition-all">
+                              {m.reasoning || '추론 과정을 정리하고 있습니다...'}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* 마크다운 콘텐츠 */}
+                      <div className="text-gray-800 text-base leading-relaxed w-full prose prose-base max-w-none">
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
+                          components={{
+                            table: ({ node, ...props }) => (
+                              <div className="overflow-x-auto my-3 border border-gray-100 rounded-lg">
+                                <table className="min-w-full divide-y divide-gray-100 text-sm" {...props} />
+                              </div>
+                            ),
+                            thead: ({ node, ...props }) => <thead className="bg-gray-50 text-gray-700 font-semibold" {...props} />,
+                            th: ({ node, ...props }) => <th className="px-3.5 py-2.5 text-left" {...props} />,
+                            td: ({ node, ...props }) => <td className="px-3.5 py-2.5 border-t border-gray-100 text-gray-600" {...props} />,
+                            p: ({ node, ...props }) => <p className="mb-2.5 last:mb-0 leading-relaxed" {...props} />,
+                            ul: ({ node, ...props }) => <ul className="list-disc pl-5 my-2 space-y-1" {...props} />,
+                            ol: ({ node, ...props }) => <ol className="list-decimal pl-5 my-2 space-y-1" {...props} />,
+                          }}
+                        >
+                          {m.content}
+                        </ReactMarkdown>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            {loading && messages[messages.length - 1]?.content === '' && !messages[messages.length - 1]?.reasoning && (
               <div className="text-gray-300 text-sm italic animate-pulse py-2">
                 답변을 생각하고 있습니다...
               </div>
@@ -361,7 +395,7 @@ export default function Home() {
           </div>
         </div>
 
-        {/* 하단 질문 입력 창 (Textarea 교체 및 Shift+Enter 처리) */}
+        {/* 하단 메시지 입력창 */}
         <div className="p-4 bg-white shrink-0">
           <div className="max-w-3xl mx-auto flex items-end gap-2 bg-gray-50 rounded-2xl p-2.5 border border-gray-100 focus-within:border-pink-200 focus-within:ring-2 focus-within:ring-pink-50 transition shadow-2xs">
             <textarea
@@ -372,11 +406,11 @@ export default function Home() {
               onKeyDown={(e) => {
                 if (e.nativeEvent.isComposing) return;
                 if (e.key === 'Enter' && e.shiftKey) {
-                  return; // Shift+Enter: 줄바꿈 실행
+                  return;
                 }
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();
-                  sendMessage(); // Enter: 메시지 제출
+                  sendMessage();
                 }
               }}
               className="flex-1 bg-transparent px-3 py-1.5 text-base text-gray-800 focus:outline-none disabled:opacity-50 resize-none max-h-32 overflow-y-auto"

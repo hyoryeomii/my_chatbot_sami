@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 
-// 1. 실제로 실행할 외부 날씨 정보 함수 (예: Mock 데이터)
+// tool calling
 async function getWeather(city: string, date: string = '오늘') {
   const isDaejeon = city.includes('대전') || city.toLowerCase().includes('daejeon');
   const targetCity = isDaejeon ? '대전' : city;
@@ -16,7 +16,6 @@ async function getWeather(city: string, date: string = '오늘') {
     });
   }
 
-  // 기본값: 오늘 날씨
   return JSON.stringify({
     location: targetCity,
     target_date: '오늘',
@@ -28,11 +27,12 @@ async function getWeather(city: string, date: string = '오늘') {
 
 export async function POST(req: Request) {
   try {
-    const { message, reasoningEffort } = await req.json();
+    const { message, reasoningEffort, model } = await req.json();
+    const selectedModel = model || '빠른 모델 플러스';
 
     const SAMIGPT_API_URL = process.env.SAMIGPT_API_URL || 'https://gpt.samitech.kr/api/llm';
-    const SAMIGPT_API_KEY = process.env.SAMIGPT_API_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjaGVjayI6ZmFsc2UsInVzZXJuYW1lIjoiZ3lmdWQ1MjE2IiwiZXhwIjo0OTQyOTQ1NzIxfQ.gGr6plsCOZkz-3FociJUsPSjH8E2SnGWPf6q0M8AY84';
-    const USER_COOKIE = process.env.USER_COOKIE || '__Host-next-auth.csrf-token-gpt=db7ee97142721316dcdd2e2e3015282f29289e14f3b4dc8125cbea74a818ad91%7C27a14d937d24e3890abe56455c4206cae332e895e2b251e9d55aae63adc8be38; __Secure-next-auth.callback-url-gpt=http%3A%2F%2Flocalhost%3A3000; __Secure-next-auth.session-token-gpt=eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..QoP6GSzrpFrpIyCi.STcMukaN7-I06BZc9ZdNQNaPUruL1fi1sQHjWpedVUiUgKv-tzwarqzLMDeD3s6Sk11VFVqjNNsiSXU2XwRySKZzSm_pjKrXJZuy3yFiUCK_DPRnd4VNxi2Ytj8HRMBXsJXZOX1XbbNjUkKdmwu6K6f37xK2XUeQHYPrY9k-4Tj7ACIaHUdBHrjI2dXRTnHi2dOecm_WL5WdaUh0VJkOiE4g4CZDbNad_WXNaIL_-LDMu9BY8Vw1kzkHncXpSyYG6JDz5XIC-RnklKl0fe-ATDFuEs3BiwSqllq9AsuDNenDAaieep39tO6wdxUFDP6KdT57uxX3-jsYE23cjyHsvZ4d_PYvVkgJlJdqbS--I2_MUwpTLTnDm9UxtGzpLAmpi-8jn5cEZKiTLL7RHphVjPG32mTP7nIxIprD2ujcRGvd5jfBewSkaPsN8tBTEXZXnM6G8aFzz1X-n28gPoQzK1ymrP0bX81KablBvqy0CY9jlcq5q_6Vqy1SeP7mw50Qji76abBaIXaZTve98okvU8XlrCG4tnmE1dxOMxRJPT8r8evlBY0j5BNbiDXQzNGjUJ17wayTaVhmczYON9p6dFTO0bHiXrG7DUXvT3LzgwDHnnZe4uD8_shdl83QyDlFuT50rhB5AnjVwUEnscf8NJjtFEsqAibpUiaOmZPYdag5ubRVnS_eXWfYWA9IsiHbPnS5ntbYcw_sPKHc3o0hjU_RZHbWoZVBM_d0OeTvsBTgRUiyZPNBUnPlsDsrTKAbY4k_NTApwd9ZXF3ACtW7njaSah32qzzxPA3G5p3ywbRkyNofwrodLArdg3yj6X9BWNM.2j3992k0toJ6Nhrcts5xXQ';
+    const SAMIGPT_API_KEY = process.env.SAMIGPT_API_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjaGVjayI6ZmFsc2UsInVzZXJuYW1lIjoiZ3lmdWQ1MjE2IiwiZXhwIjo4OTQyOTQ1NzIxfQ.gGr6plsCOZkz-3FociJUsPSjH8E2SnGWPf6q0M8AY84';
+    const USER_COOKIE = process.env.USER_COOKIE || '__Host-next-auth.csrf-token-gpt=...';
 
     const requestHeaders = {
       'Accept': 'text/event-stream, application/json, */*',
@@ -44,9 +44,11 @@ export async function POST(req: Request) {
       'X-Organization-Code': 'sami',
     };
 
-    // 1단계 시스템 프롬프트: 도구 사용 필요 여부를 판단하도록 지시
+    // 1단계 시스템 프롬프트 (한국어 사고 강력 지침)
     const systemPrompt = `
 너는 도구 판단 에이전트야. 사용자의 질문을 분석해서 외부 도구 호출이 필요한지 판단해.
+CRITICAL INSTRUCTION: 너의 모든 내부 추론 및 사고 과정(Reasoning/CoT)은 절대로 영어를 쓰지 말고 오직 '한국어'로만 작성해라.
+
 사용 가능한 도구:
 - get_weather(city: string, date: string): 도시의 날씨 정보를 조회
 
@@ -58,18 +60,19 @@ export async function POST(req: Request) {
 4. 외부 도구가 필요 없는 일반 질문이면 반드시 "NONE"이라고 응답해.
 5. 설명이나 부연 설명, 마크다운 코드블럭(\`\`\`)을 절대 붙이지 마.
 `;
-    // 1차 호출: 도구 필요한지 비스트리밍으로 판단
+
+    // 1차 호출: 도구 사용 필요 여부 판단
     const checkResponse = await fetch(SAMIGPT_API_URL, {
       method: 'POST',
       headers: requestHeaders,
       body: JSON.stringify({
-        model: '빠른 모델 플러스',
+        model: selectedModel,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: message }
         ],
         reasoning_effort: reasoningEffort || 'medium',
-        temperature: 0, // 정확한 판단을 위해 온도를 0으로 설정
+        temperature: 0,
         stream: false,
         org_code: 'sami',
         organization: 'sami',
@@ -81,7 +84,6 @@ export async function POST(req: Request) {
 
     let externalData = '';
 
-    // 사미GPT가 JSON 형태로 응답해 도구 사용을 요구했는지 확인
     if (resultText.includes('get_weather')) {
       try {
         const parsed = JSON.parse(resultText);
@@ -91,13 +93,19 @@ export async function POST(req: Request) {
           externalData = await getWeather(city, date);
         }
       } catch (e) {
-        // JSON 파싱 실패 시 일반 대화로 처리
+        // 파싱 실패 시 일반 대화 진행
       }
     }
 
-    // 2단계 프롬프트 구성: 외부 데이터가 있으면 포함시켜서 최종 답변 요청
-    const finalMessages = [];
-    
+    // 2단계 프롬프트 (한국어 추론 유도 강화)
+    const finalMessages = [
+      {
+        role: 'system',
+        content: `너는 친절하고 유용한 AI 비서이다.
+[중요 지침] 답변을 도출하기 위한 모든 사고 과정(Reasoning, Thinking process)은 반드시 100% 한국어로만 작성해야 한다. 영어나 다른 언어를 생각 과정에 사용하지 마라.`
+      }
+    ];
+
     if (externalData) {
       finalMessages.push({
         role: 'system',
@@ -107,12 +115,12 @@ export async function POST(req: Request) {
 
     finalMessages.push({ role: 'user', content: message });
 
-    // 2차 호출: 사용자에게 보여줄 최종 답변을 스트리밍으로 수신
+    // 2차 호출: 스트리밍 답변 생성
     const streamResponse = await fetch(SAMIGPT_API_URL, {
       method: 'POST',
       headers: requestHeaders,
       body: JSON.stringify({
-        model: '빠른 모델 플러스',
+        model: selectedModel,
         messages: finalMessages,
         reasoning_effort: reasoningEffort || 'medium',
         temperature: 1,
@@ -134,7 +142,6 @@ export async function POST(req: Request) {
   }
 }
 
-// 헬퍼 함수: SSE 스트림 변환 및 응답 생성
 function createSSEStreamResponse(body: ReadableStream<Uint8Array>) {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
@@ -165,7 +172,7 @@ function createSSEStreamResponse(body: ReadableStream<Uint8Array>) {
               }
             }
           } catch {
-            // JSON 파싱 에러 무시
+            // 파싱 오류 무시
           }
         }
       }

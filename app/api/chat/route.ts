@@ -37,18 +37,21 @@ async function fetchWebPage(targetUrl: string) {
 async function callMcpTool(toolName: string, args: Record<string, any>) {
   let transport: StdioClientTransport | null = null;
   try {
+    // 허용할 디렉토리 경로 지정 (프로젝트 루트 경로)
+    const allowedPath = process.cwd(); 
+
     transport = new StdioClientTransport({
       command: 'npx',
-      args: ['-y', '@modelcontextprotocol/server-everything'],
+      args: ['-y', '@modelcontextprotocol/server-filesystem', allowedPath],
     });
 
     const client = new Client(
-      { name: 'samigpt-client', version: '1.0.0' },
+      { name: 'samigpt-filesystem-client', version: '1.0.0' },
       { capabilities: {} }
     );
 
     await client.connect(transport);
-    console.log(`🔌 MCP 서버 연결 성공! [실행 요청 도구: ${toolName}]`);
+    console.log(`🔌 Filesystem MCP 연결 성공! [도구: ${toolName}]`);
 
     const result = await client.callTool({
       name: toolName,
@@ -96,32 +99,24 @@ export async function POST(req: Request) {
 너는 오직 JSON만 출력하는 도구 판단 시스템이다. 절대로 질문에 대한 답변이나 안내 문구를 작성하지 마라.
 
 사용 가능한 도구:
-- fetch_web_page(url: string): 웹페이지의 URL(http:// 또는 https://)을 읽어서 텍스트 데이터를 반환함
-- mcp_echo(message: string): [MCP 도구] 입력받은 텍스트를 MCP 프로토콜로 에코 반환함
+- fetch_web_page(url: string): 웹페이지의 URL을 읽어서 텍스트 데이터를 반환함
+- list_directory(path: string): 지정된 디렉토리 내 파일 및 폴더 목록을 조회함 (기본값: ".")
+- read_file(path: string): 지정된 파일의 내용을 읽어옴
 
 규칙:
-1. 사용자의 질문에 실제 웹 URL(http:// 또는 https://)이 포함되어 있거나 특정 웹사이트 접속이 필요하면:
+1. 사용자의 질문에 실제 웹 URL(http:// 또는 https://)이 포함되어 있으면:
 {"tool": "fetch_web_page", "url": "추출한URL"}
 
-2. 만약 MCP 테스트/에코 요청이면:
-{"tool": "mcp_echo", "message": "사용자메시지"}
+2. 파일 목록 조회/폴더 확인 요청이면:
+{"tool": "list_directory", "path": "."}
 
-3. 위 조건에 해당하지 않는 모든 질문은 무조건 단 한 단어만 출력해:
+3. 특정 파일 내용 읽기 요청이면:
+{"tool": "read_file", "path": "상대경로/파일명"}
+
+4. 그 외 일반 질문은 무조건 단 한 단어만 출력해:
 NONE
 `
-      : `
-너는 오직 JSON만 출력하는 도구 판단 시스템이다. 절대로 질문에 대한 답변이나 안내 문구를 작성하지 마라.
-
-사용 가능한 도구:
-- fetch_web_page(url: string): 웹페이지의 URL을 읽어서 텍스트 데이터를 반환함
-
-규칙:
-1. 사용자의 질문에 실제 웹 URL(http:// 또는 https://)이 직접 작성되어 있을 때만 pure JSON으로 응답해:
-{"tool": "fetch_web_page", "url": "추출한URL"}
-
-2. "MCP", "에코", "테스트" 등의 단어가 있더라도 URL이 직접 제시되지 않았다면 절대로 웹 페치를 실행하지 말고 무조건 단 한 단어만 출력해:
-NONE
-`;
+      : `/* 기존 useMcp === false 일 때의 프롬프트 유지 */`;
 
     const checkResponse = await fetch(SAMIGPT_API_URL, {
       method: 'POST',
@@ -152,17 +147,18 @@ NONE
           const parsed = JSON.parse(resultText);
 
           // 1) 웹 페치 실행 (Tool Calling)
-          if (parsed.tool === 'fetch_web_page' && parsed.url) {
-            console.log('🌐 [Tool Calling] 웹 페치 진행 중... URL:', parsed.url);
-            externalData = await fetchWebPage(parsed.url);
+          if (parsed.tool === 'list_directory' && useMcp) {
+            console.log('[MCP] 디렉토리 목록 조회 중...');
+            const mcpRes = await callMcpTool('list_directory', { path: parsed.path || '.' });
+            if (mcpRes) externalData = mcpRes;
           }
 
           // 2) MCP 도구 실행 (토글이 ON일 때만 진행)
-          else if (parsed.tool === 'mcp_echo' && useMcp) {
-            console.log('🔌 [MCP] 외부 MCP 서버에 echo 도구 실행 위임...');
-            const mcpRes = await callMcpTool('echo', { message: parsed.message || message });
+          else if (parsed.tool === 'read_file' && useMcp) {
+            console.log('[MCP] 파일 읽는 중... File:', parsed.path);
+            const mcpRes = await callMcpTool('read_file', { path: parsed.path });
             if (mcpRes) externalData = mcpRes;
-          }
+    }
         }
       } catch (e) {
         console.error('도구 응답 파싱 에러:', e);

@@ -2,7 +2,6 @@
 
 import { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -10,538 +9,199 @@ interface Message {
   reasoning?: string;
 }
 
-interface ChatSession {
-  id: string;
-  title: string;
-  messages: Message[];
-  reasoningEffort: string;
-  selectedModel: string;
-}
-
 export default function Home() {
+  const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
-  const [reasoningEffort, setReasoningEffort] = useState('medium');
+  const [isLoading, setIsLoading] = useState(false);
+  const [useMcp, setUseMcp] = useState(true);
+  const [targetPath, setTargetPath] = useState(''); // 📂 동적 MCP 허용 경로 상태
   const [selectedModel, setSelectedModel] = useState('빠른 모델 플러스');
-  const [useMcp, setUseMcp] = useState(false); // 🔌 MCP 연결 토글 상태 (기본값: false)
-  const [loading, setLoading] = useState(false);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // 모달 팝업용 상태
-  const [activeModalReasoning, setActiveModalReasoning] = useState<string | null>(null);
-
-  const [sessions, setSessions] = useState<ChatSession[]>([
-    {
-      id: 'session-1',
-      title: '새 대화',
-      messages: [],
-      reasoningEffort: 'medium',
-      selectedModel: '빠른 모델 플러스',
-    },
-  ]);
-  const [currentSessionId, setCurrentSessionId] = useState<string>('session-1');
-
-  const chatContainerRef = useRef<HTMLDivElement>(null);
-
-  const currentSession = sessions.find((s) => s.id === currentSessionId) || sessions[0];
-  const messages = currentSession ? currentSession.messages : [];
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
 
   useEffect(() => {
-    if (chatContainerRef.current) {
-      chatContainerRef.current.scrollTo({
-        top: chatContainerRef.current.scrollHeight,
-        behavior: 'smooth',
-      });
-    }
-  }, [messages, loading]);
+    scrollToBottom();
+  }, [messages]);
 
-  const updateCurrentSessionMessages = (
-    newMessages: Message[] | ((prev: Message[]) => Message[])
-  ) => {
-    setSessions((prevSessions) =>
-      prevSessions.map((session) => {
-        if (session.id === currentSessionId) {
-          const updatedMsgs =
-            typeof newMessages === 'function' ? newMessages(session.messages) : newMessages;
-          return { ...session, messages: updatedMsgs };
-        }
-        return session;
-      })
-    );
-  };
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!input.trim() || isLoading) return;
 
-  // 💬 말풍선 이모지 제거된 제목 설정
-  const fetchLLMTitle = async (sessionId: string, userPrompt: string) => {
-    try {
-      const res = await fetch('/api/title', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: userPrompt }),
-      });
-
-      if (!res.ok) {
-        console.warn('제목 생성 응답 실패:', res.status);
-        return;
-      }
-
-      const data = await res.json();
-      if (data.title) {
-        const cleanTitle = data.title.replace(/^💬\s*/, '');
-        setSessions((prev) =>
-          prev.map((s) => (s.id === sessionId ? { ...s, title: cleanTitle } : s))
-        );
-      }
-    } catch (e) {
-      console.error('제목 생성 중 파싱 에러 방지:', e);
-    }
-  };
-
-  const handleNewChat = () => {
-    const emptySession = sessions.find((s) => s.messages.length === 0);
-    if (emptySession) {
-      setCurrentSessionId(emptySession.id);
-      return;
-    }
-
-    const newId = `session-${Date.now()}`;
-    const newSession: ChatSession = {
-      id: newId,
-      title: '새 대화',
-      messages: [],
-      reasoningEffort: reasoningEffort,
-      selectedModel: selectedModel,
-    };
-    setSessions((prev) => [newSession, ...prev]);
-    setCurrentSessionId(newId);
-  };
-
-  // 실시간 추론 텍스트 중 가장 최근 1줄 추출
-  const getLatestReasoningStep = (fullReasoning: string = '') => {
-    if (!fullReasoning.trim()) return '생각을 정리하고 있습니다...';
-
-    const lines = fullReasoning
-      .split('\n')
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0);
-
-    if (lines.length === 0) return '생각을 정리하고 있습니다...';
-
-    return lines[lines.length - 1];
-  };
-
-  const sendMessage = async () => {
-    if (!input.trim() || loading) return;
-
-    const userMsg: Message = { role: 'user', content: input };
-    const newMessages = [...messages, userMsg];
-
-    updateCurrentSessionMessages(newMessages);
-
-    const currentInput = input;
-    const isFirstMessage = messages.length === 0;
-    const targetSessionId = currentSessionId;
-
+    const userMessage: Message = { role: 'user', content: input };
+    setMessages((prev) => [...prev, userMessage]);
     setInput('');
-    setLoading(true);
+    setIsLoading(true);
 
-    if (isFirstMessage) {
-      fetchLLMTitle(targetSessionId, currentInput);
-    }
-
-    const assistantIndex = newMessages.length;
-
-    updateCurrentSessionMessages((prev) => [
-      ...prev,
-      { role: 'assistant', content: '', reasoning: '' },
-    ]);
-
-    let typingInterval: NodeJS.Timeout | null = null;
-    let checkQueueFinish: NodeJS.Timeout | null = null;
+    // AI 응답 임시 생성
+    setMessages((prev) => [...prev, { role: 'assistant', content: '', reasoning: '' }]);
 
     try {
-      const res = await fetch('/api/chat', {
+      const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: currentInput,
-          reasoningEffort,
+          message: userMessage.content,
+          useMcp,
+          targetPath, // 👈 프론트엔드에서 입력된 동적 경로 전달
           model: selectedModel,
-          useMcp, // 🔌 MCP 토글 옵션 전달!
         }),
       });
 
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({ error: '알 수 없는 오류' }));
-        updateCurrentSessionMessages((prev) => {
-          const updated = [...prev];
-          updated[assistantIndex] = {
-            role: 'assistant',
-            content: `⚠️ 오류가 발생했습니다: ${errData.error || '서버 응답 오류'}`,
-          };
-          return updated;
-        });
-        setLoading(false);
-        return;
-      }
+      if (!response.ok) throw new Error('API 요청 실패');
 
-      if (!res.body) {
-        updateCurrentSessionMessages((prev) => {
-          const updated = [...prev];
-          updated[assistantIndex] = {
-            role: 'assistant',
-            content: '⚠️ 응답 데이터를 받아올 수 없습니다.',
-          };
-          return updated;
-        });
-        setLoading(false);
-        return;
-      }
-
-      const reader = res.body.getReader();
+      const reader = response.body?.getReader();
       const decoder = new TextDecoder();
-      let done = false;
-      let buffer = '';
 
-      let chunkQueue: string[] = [];
+      if (!reader) return;
 
-      typingInterval = setInterval(() => {
-        if (chunkQueue.length > 0) {
-          const nextChunks = chunkQueue.splice(0, 2).join('');
-          updateCurrentSessionMessages((prev) => {
-            const updated = [...prev];
-            const currentMsg = updated[assistantIndex];
-            if (!currentMsg) return prev;
+      let assistantContent = '';
+      let assistantReasoning = '';
 
-            return updated.map((msg, idx) =>
-              idx === assistantIndex
-                ? { ...msg, content: (msg.content || '') + nextChunks }
-                : msg
-            );
-          });
-        }
-      }, 10);
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
 
-      while (!done) {
-        const { value, done: doneReading } = await reader.read();
-        done = doneReading;
-        buffer += decoder.decode(value, { stream: true });
-
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n');
 
         for (const line of lines) {
           if (!line.trim()) continue;
           try {
-            const { reasoning, content } = JSON.parse(line);
+            const data = JSON.parse(line);
+            if (data.reasoning) assistantReasoning += data.reasoning;
+            if (data.content) assistantContent += data.content;
 
-            if (reasoning) {
-              updateCurrentSessionMessages((prev) => {
-                const updated = [...prev];
-                const currentMsg = updated[assistantIndex];
-                if (!currentMsg) return prev;
-
-                updated[assistantIndex] = {
-                  ...currentMsg,
-                  reasoning: (currentMsg.reasoning || '') + reasoning,
-                };
-                return updated;
-              });
-            }
-
-            if (content) {
-              chunkQueue.push(content);
-            }
-          } catch (e) {
-            console.error('JSON 파싱 에러:', e);
+            setMessages((prev) => {
+              const updated = [...prev];
+              const last = updated[updated.length - 1];
+              if (last && last.role === 'assistant') {
+                last.content = assistantContent;
+                last.reasoning = assistantReasoning;
+              }
+              return updated;
+            });
+          } catch (err) {
+            // JSON 파싱 실패 무시
           }
         }
       }
-
-      checkQueueFinish = setInterval(() => {
-        if (chunkQueue.length === 0) {
-          if (typingInterval) clearInterval(typingInterval);
-          if (checkQueueFinish) clearInterval(checkQueueFinish);
-          setLoading(false);
-        }
-      }, 50);
-
-    } catch (err) {
-      console.error(err);
-      if (typingInterval) clearInterval(typingInterval);
-      if (checkQueueFinish) clearInterval(checkQueueFinish);
-
-      updateCurrentSessionMessages((prev) => {
-        const updated = [...prev];
-        updated[assistantIndex] = {
-          role: 'assistant',
-          content: '오류가 발생했습니다. 다시 시도해주세요.',
-        };
-        return updated;
-      });
-      setLoading(false);
+    } catch (error) {
+      console.error('에러 발생:', error);
+      setMessages((prev) => [
+        ...prev.slice(0, -1),
+        { role: 'assistant', content: '죄송합니다. 오류가 발생했습니다.' },
+      ]);
+    } finally {
+      setIsLoading(false);
     }
   };
 
   return (
-    <div className="flex h-screen bg-white font-sans text-gray-800 antialiased overflow-hidden">
-      {/* 🌸 1. 사이드바 */}
-      <aside
-        className={`${
-          isSidebarOpen ? 'w-64' : 'w-0'
-        } bg-pink-50/60 transition-all duration-300 ease-in-out flex flex-col border-r border-pink-100/50 overflow-hidden relative z-20 shrink-0`}
-      >
-        <div className="p-4 flex flex-col h-full w-64">
-          <div className="flex items-center justify-between mb-5 px-1">
-            <h1 className="text-xl font-bold text-gray-800 tracking-tight">SAMI-GPT</h1>
-            <button
-              onClick={() => setIsSidebarOpen(false)}
-              className="p-1.5 rounded-lg hover:bg-pink-100/60 text-gray-600 transition"
-              title="사이드바 닫기"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-              </svg>
-            </button>
-          </div>
-
-          <button
-            onClick={handleNewChat}
-            className="w-full bg-white hover:bg-pink-100/40 text-gray-700 font-medium py-2.5 px-4 rounded-xl shadow-xs transition border border-pink-200/60 flex items-center justify-center gap-2 mb-6 text-sm"
+    <main className="flex flex-col h-screen max-w-4xl mx-auto p-4 font-sans">
+      {/* 상단 컨트롤 바 */}
+      <header className="flex flex-wrap items-center justify-between gap-4 p-4 mb-4 bg-gray-50 rounded-xl border border-gray-200">
+        <div className="flex items-center gap-3">
+          <label className="text-sm font-semibold text-gray-700">모델 선택:</label>
+          <select
+            value={selectedModel}
+            onChange={(e) => setSelectedModel(e.target.value)}
+            className="p-2 border border-gray-300 rounded-lg bg-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
-            <span>+</span> 새 대화 시작하기
-          </button>
-
-          <div className="text-xs font-semibold text-gray-400 mb-2 px-1">이전 대화 목록</div>
-          <div className="flex-1 overflow-y-auto space-y-1 pr-1">
-            {sessions.map((session) => (
-              <button
-                key={session.id}
-                onClick={() => setCurrentSessionId(session.id)}
-                className={`w-full text-left px-3 py-2.5 rounded-xl text-sm truncate transition ${
-                  session.id === currentSessionId
-                    ? 'bg-pink-100/80 font-normal text-pink-950'
-                    : 'text-gray-600 hover:bg-pink-100/40 hover:text-gray-900 font-normal'
-                }`}
-              >
-                {session.title || '새 대화'}
-              </button>
-            ))}
-          </div>
-        </div>
-      </aside>
-
-      {/* 💬 2. 메인 영역 */}
-      <main className="flex-1 flex flex-col h-screen bg-white relative overflow-hidden min-w-0">
-        {/* 헤더 */}
-        <header className="px-6 py-4 flex items-center justify-between bg-white shrink-0 z-10 border-b border-gray-50">
-          <div className="flex items-center gap-3">
-            {!isSidebarOpen && (
-              <button
-                onClick={() => setIsSidebarOpen(true)}
-                className="p-2 rounded-lg hover:bg-gray-100 text-gray-600 transition"
-                title="사이드바 열기"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-                </svg>
-              </button>
-            )}
-          </div>
-
-          <div className="flex items-center gap-4">
-            {/* 🔌 MCP 연동 On/Off 토글 버튼 */}
-            <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1">
-              <span className="text-xs font-medium text-gray-500">MCP 연동</span>
-              <button
-                type="button"
-                onClick={() => setUseMcp(!useMcp)}
-                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                  useMcp ? 'bg-pink-500' : 'bg-gray-300'
-                }`}
-              >
-                <span
-                  className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-                    useMcp ? 'translate-x-4' : 'translate-x-0'
-                  }`}
-                />
-              </button>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-medium text-gray-400">모델:</span>
-              <select
-                value={selectedModel}
-                onChange={(e) => setSelectedModel(e.target.value)}
-                className="text-xs border border-gray-200 rounded-lg px-3 py-1.5 bg-gray-50 font-medium text-gray-700 focus:outline-none focus:ring-1 focus:ring-pink-200 cursor-pointer hover:bg-gray-100 transition"
-              >
-                <option value="빠른 모델">빠른 모델</option>
-                <option value="빠른 모델 플러스">빠른 모델 플러스</option>
-                <option value="기본 모델 플러스">기본 모델 플러스</option>
-                <option value="생각하는 모델 플러스">생각하는 모델 플러스</option>
-              </select>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-medium text-gray-400">추론 강도:</span>
-              <select
-                value={reasoningEffort}
-                onChange={(e) => setReasoningEffort(e.target.value)}
-                className="text-xs border border-gray-200 rounded-lg px-3 py-1.5 bg-gray-50 font-medium text-gray-700 focus:outline-none focus:ring-1 focus:ring-pink-200 cursor-pointer hover:bg-gray-100 transition"
-              >
-                <option value="low">Low (빠른 응답)</option>
-                <option value="medium">Medium (기본 추론)</option>
-                <option value="high">High (심층 추론)</option>
-              </select>
-            </div>
-          </div>
-        </header>
-
-        {/* 📜 채팅 메시지 스크롤 영역 */}
-        <div ref={chatContainerRef} className="flex-1 overflow-y-auto">
-          <div className="max-w-3xl mx-auto px-6 pt-4 pb-12 space-y-6 min-w-0">
-            {messages.length === 0 && (
-              <div className="h-[60vh] flex flex-col items-center justify-center text-gray-300 text-base">
-                <p>궁금한 점을 자유롭게 입력해 주세요!</p>
-              </div>
-            )}
-
-            {messages.map((m, i) => {
-              const isGenerating = loading && i === messages.length - 1;
-
-              return (
-                <div key={i} className="flex flex-col space-y-2 min-w-0">
-                  {m.role === 'user' ? (
-                    <div className="flex justify-end">
-                      <div className="bg-pink-100/80 text-pink-950 px-4.5 py-3 rounded-2xl max-w-[80%] text-base leading-relaxed shadow-2xs whitespace-pre-wrap">
-                        {m.content}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex flex-col items-start pr-4 py-1 w-full gap-3 min-w-0 overflow-hidden">
-                      
-                      {/* 🤖 생각이 들어갈 카드 */}
-                      {(m.reasoning || isGenerating) && (
-                        <div className="flex items-start gap-2.5 w-full max-w-full min-w-0">
-                          <div className="w-7 h-7 rounded-full bg-purple-100 border border-purple-200 flex items-center justify-center text-purple-600 text-xs shrink-0 mt-0.5">
-                            🤖
-                          </div>
-
-                          <div
-                            onClick={() => m.reasoning && setActiveModalReasoning(m.reasoning)}
-                            className="flex-1 border border-gray-200/80 bg-gray-50/50 hover:bg-gray-50 rounded-xl p-3 transition cursor-pointer shadow-2xs group relative max-w-full min-w-0 overflow-hidden"
-                          >
-                            <div className="flex items-center justify-between text-xs font-semibold text-gray-700 mb-1">
-                              <div className="flex items-center gap-2">
-                                <span className={`w-2 h-2 rounded-full ${isGenerating ? 'bg-blue-500 animate-ping' : 'bg-gray-400'}`} />
-                                <span>{isGenerating ? '생각중...' : '생각 완료'}</span>
-                              </div>
-                              <span className="text-gray-400 group-hover:text-purple-600 text-[10px] transition shrink-0 ml-2">
-                                ▼ 클릭해서 전체 생각 보기
-                              </span>
-                            </div>
-
-                            {isGenerating && (
-                              <div className="text-xs text-gray-500 italic truncate font-normal w-full overflow-hidden">
-                                {getLatestReasoningStep(m.reasoning)}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* 마크다운 답변 본문 */}
-                      {m.content && (
-                        <div className="text-gray-800 text-base leading-relaxed w-full prose prose-base max-w-none pl-9 min-w-0 overflow-hidden">
-                          <ReactMarkdown
-                            remarkPlugins={[remarkGfm]}
-                            components={{
-                              table: ({ node, ...props }) => (
-                                <div className="overflow-x-auto my-3 border border-gray-100 rounded-lg">
-                                  <table className="min-w-full divide-y divide-gray-100 text-sm" {...props} />
-                                </div>
-                              ),
-                              thead: ({ node, ...props }) => <thead className="bg-gray-50 text-gray-700 font-semibold" {...props} />,
-                              th: ({ node, ...props }) => <th className="px-3.5 py-2.5 text-left" {...props} />,
-                              td: ({ node, ...props }) => <td className="px-3.5 py-2.5 border-t border-gray-100 text-gray-600" {...props} />,
-                              p: ({ node, ...props }) => <p className="mb-2.5 last:mb-0 leading-relaxed" {...props} />,
-                              ul: ({ node, ...props }) => <ul className="list-disc pl-5 my-2 space-y-1" {...props} />,
-                              ol: ({ node, ...props }) => <ol className="list-decimal pl-5 my-2 space-y-1" {...props} />,
-                            }}
-                          >
-                            {m.content}
-                          </ReactMarkdown>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-
-            {loading && messages[messages.length - 1]?.content === '' && !messages[messages.length - 1]?.reasoning && (
-              <div className="text-gray-300 text-sm italic animate-pulse py-2 pl-9">
-                답변을 준비하고 있습니다...
-              </div>
-            )}
-          </div>
+            <option value="빠른 모델">빠른 모델</option>
+            <option value="빠른 모델 플러스">빠른 모델 플러스</option>
+            <option value="기본 모델 플러스">기본 모델 플러스</option>
+            <option value="생각하는 모델 플러스">생각하는 모델 플러스</option>
+          </select>
         </div>
 
-        {/* 하단 입력창 */}
-        <div className="p-4 bg-white shrink-0">
-          <div className="max-w-3xl mx-auto flex items-end gap-2 bg-gray-50 rounded-2xl p-2.5 border border-gray-100 focus-within:border-pink-200 focus-within:ring-2 focus-within:ring-pink-50 transition shadow-2xs">
-            <textarea
-              rows={1}
-              value={input}
-              disabled={loading}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.nativeEvent.isComposing) return;
-                if (e.key === 'Enter' && e.shiftKey) {
-                  return;
-                }
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault();
-                  sendMessage();
-                }
-              }}
-              className="flex-1 bg-transparent px-3 py-1.5 text-base text-gray-800 focus:outline-none disabled:opacity-50 resize-none max-h-32 overflow-y-auto"
-              placeholder="메시지를 입력하세요..."
-            />
+        {/* MCP 설정 영역 */}
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-semibold text-gray-700">MCP 연동</span>
             <button
-              onClick={sendMessage}
-              disabled={loading || !input.trim()}
-              className="bg-pink-400 hover:bg-pink-500 disabled:bg-gray-200 disabled:text-gray-400 text-white text-base font-medium px-4 py-2 rounded-xl transition shadow-2xs shrink-0"
+              type="button"
+              onClick={() => setUseMcp(!useMcp)}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                useMcp ? 'bg-pink-500' : 'bg-gray-300'
+              }`}
             >
-              전송
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  useMcp ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
             </button>
           </div>
+
+          {/* MCP 경로 입력창 (MCP 연동이 켜졌을 때만 표시) */}
+          {useMcp && (
+            <input
+              type="text"
+              placeholder="허용할 절대경로 (비워두면 프로젝트 폴더)"
+              value={targetPath}
+              onChange={(e) => setTargetPath(e.target.value)}
+              className="p-2 text-xs border border-gray-300 rounded-lg w-64 focus:outline-none focus:ring-2 focus:ring-pink-400"
+            />
+          )}
         </div>
-      </main>
+      </header>
 
-      {/* 🌸 전체 '생각 보기' 모달 팝업 창 */}
-      {activeModalReasoning && (
-        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl border border-gray-100 overflow-hidden flex flex-col max-h-[80vh]">
-            <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between bg-gray-50/50">
-              <div className="flex items-center gap-2">
-                <span className="text-lg">🤖</span>
-                <h3 className="font-bold text-gray-800 text-base">생각 보기</h3>
-              </div>
-              <button
-                onClick={() => setActiveModalReasoning(null)}
-                className="text-gray-400 hover:text-gray-600 p-1.5 rounded-lg hover:bg-gray-200/50 transition text-lg"
-              >
-                ✕
-              </button>
-            </div>
-
-            <div className="p-6 overflow-y-auto flex-1 bg-white">
-              <div className="bg-gray-900 text-gray-200 p-4 rounded-xl font-mono text-xs leading-relaxed whitespace-pre-wrap overflow-x-auto shadow-inner border border-gray-800">
-                {activeModalReasoning}
+      {/* 메시지 채팅 영역 */}
+      <div className="flex-1 overflow-y-auto space-y-4 p-4 border border-gray-200 rounded-xl bg-white mb-4">
+        {messages.map((msg, idx) => (
+          <div
+            key={idx}
+            className={`flex flex-col ${
+              msg.role === 'user' ? 'items-end' : 'items-start'
+            }`}
+          >
+            <div
+              className={`max-w-[80%] p-4 rounded-2xl ${
+                msg.role === 'user'
+                  ? 'bg-blue-600 text-white rounded-br-none'
+                  : 'bg-gray-100 text-gray-800 rounded-bl-none'
+              }`}
+            >
+              {msg.reasoning && (
+                <details className="mb-2 text-xs text-gray-500 border-b border-gray-200 pb-2" open>
+                  <summary className="cursor-pointer font-semibold mb-1">추론 과정</summary>
+                  <p className="whitespace-pre-wrap">{msg.reasoning}</p>
+                </details>
+              )}
+              <div className="prose prose-sm max-w-none">
+                <ReactMarkdown>{msg.content}</ReactMarkdown>
               </div>
             </div>
           </div>
-        </div>
-      )}
-    </div>
+        ))}
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* 입력 폼 */}
+      <form onSubmit={handleSubmit} className="flex gap-2">
+        <input
+          type="text"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder={
+            useMcp
+              ? "질문하거나 파일/폴더 조회를 요청해보세요 (예: 프로젝트 파일 목록 알려줘)"
+              : "질문이나 웹 URL을 입력하세요..."
+          }
+          disabled={isLoading}
+          className="flex-1 p-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
+        />
+        <button
+          type="submit"
+          disabled={isLoading}
+          className="px-6 py-3 bg-blue-600 text-white font-semibold rounded-xl hover:bg-blue-700 disabled:bg-gray-400 transition-colors"
+        >
+          {isLoading ? '생성 중...' : '전송'}
+        </button>
+      </form>
+    </main>
   );
 }

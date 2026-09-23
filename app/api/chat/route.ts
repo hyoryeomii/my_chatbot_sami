@@ -33,14 +33,12 @@ async function fetchWebPage(targetUrl: string) {
   }
 }
 
-// 🔌 [방법 2] Filesystem MCP(Model Context Protocol) 클라이언트 연동 함수 (경로 동적 수신)
-async function callMcpTool(toolName: string, args: Record<string, any>, customPath?: string) {
+// 🔌 [방법 2] Filesystem MCP(Model Context Protocol) 클라이언트 연동 함수
+async function callMcpTool(toolName: string, args: Record<string, any>) {
   let transport: StdioClientTransport | null = null;
   try {
-    // 사용자가 입력한 동적 경로가 있으면 사용하고, 없으면 기본값으로 프로젝트 경로(process.cwd()) 사용
-    const allowedPath = customPath && customPath.trim() !== '' ? customPath : process.cwd();
-
-    console.log(`📂 MCP 실행 허용 경로: ${allowedPath}`);
+    // 허용할 디렉토리 경로 지정 (프로젝트 루트 경로)
+    const allowedPath = process.cwd();
 
     transport = new StdioClientTransport({
       command: 'npx',
@@ -73,8 +71,8 @@ async function callMcpTool(toolName: string, args: Record<string, any>, customPa
 
 export async function POST(req: Request) {
   try {
-    // 1. 프론트엔드로부터 targetPath(동적 허용 경로)도 함께 수신
-    const { message, reasoningEffort, model, useMcp, targetPath } = await req.json();
+    // 1. 프론트엔드로부터 useMcp 토글 상태 수신
+    const { message, reasoningEffort, model, useMcp } = await req.json();
     const selectedModel = model || '빠른 모델 플러스';
 
     const SAMIGPT_API_URL = process.env.SAMIGPT_API_URL || 'https://gpt.samitech.kr/api/llm';
@@ -169,14 +167,14 @@ NONE
           // 2) MCP 디렉토리 조회 실행
           else if (parsed.tool === 'list_directory' && useMcp) {
             console.log('📁 [MCP] 디렉토리 목록 조회 중...');
-            const mcpRes = await callMcpTool('list_directory', { path: parsed.path || '.' }, targetPath);
+            const mcpRes = await callMcpTool('list_directory', { path: parsed.path || '.' });
             if (mcpRes) externalData = mcpRes;
           }
 
           // 3) MCP 파일 읽기 실행
           else if (parsed.tool === 'read_file' && useMcp) {
             console.log('📄 [MCP] 파일 읽는 중... File:', parsed.path);
-            const mcpRes = await callMcpTool('read_file', { path: parsed.path }, targetPath);
+            const mcpRes = await callMcpTool('read_file', { path: parsed.path });
             if (mcpRes) externalData = mcpRes;
           }
         }

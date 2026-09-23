@@ -146,24 +146,29 @@ NONE
         if (resultText.includes('{')) {
           const parsed = JSON.parse(resultText);
 
-          // 1) 웹 페치 실행 (Tool Calling)
-          if (parsed.tool === 'list_directory' && useMcp) {
-            console.log('[MCP] 디렉토리 목록 조회 중...');
+          // 1) 기존 웹 페치 실행 (URL 요청 시)
+          if (parsed.tool === 'fetch_web_page' && parsed.url) {
+            console.log('🌐 [Tool Calling] 웹 페치 진행 중... URL:', parsed.url);
+            externalData = await fetchWebPage(parsed.url);
+          }
+
+          // 2) MCP 디렉토리 조회 실행
+          else if (parsed.tool === 'list_directory' && useMcp) {
+            console.log('📁 [MCP] 디렉토리 목록 조회 중...');
             const mcpRes = await callMcpTool('list_directory', { path: parsed.path || '.' });
             if (mcpRes) externalData = mcpRes;
           }
 
-          // 2) MCP 도구 실행 (토글이 ON일 때만 진행)
+          // 3) MCP 파일 읽기 실행
           else if (parsed.tool === 'read_file' && useMcp) {
-            console.log('[MCP] 파일 읽는 중... File:', parsed.path);
+            console.log('📄 [MCP] 파일 읽는 중... File:', parsed.path);
             const mcpRes = await callMcpTool('read_file', { path: parsed.path });
-            if (mcpRes) externalData = mcpRes;
-    }
+            if (mcpRes) externalData = mcpRes; // 👈 이 부분이 누락되었었습니다!
+          }
         }
       } catch (e) {
         console.error('도구 응답 파싱 에러:', e);
       }
-    }
 
     // 3. 최종 대화 스트리밍 요청
     const finalMessages = [

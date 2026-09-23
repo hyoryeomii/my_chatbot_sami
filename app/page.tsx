@@ -22,9 +22,13 @@ export default function Home() {
   const [input, setInput] = useState('');
   const [reasoningEffort, setReasoningEffort] = useState('medium');
   const [selectedModel, setSelectedModel] = useState('빠른 모델 플러스');
-  const [useMcp, setUseMcp] = useState(false); // 🔌 MCP 연결 토글 상태 (기본값: false)
+  const [useMcp, setUseMcp] = useState(false);
   const [loading, setLoading] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+
+  // 📁 파일 첨부 관련 상태 추가
+  const [selectedFile, setSelectedFile] = useState<{ name: string; content: string } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // 모달 팝업용 상태
   const [activeModalReasoning, setActiveModalReasoning] = useState<string | null>(null);
@@ -69,7 +73,22 @@ export default function Home() {
     );
   };
 
-  // 💬 말풍선 이모지 제거된 제목 설정
+  // 파일 선택 처리 함수
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const text = event.target?.result as string;
+      setSelectedFile({
+        name: file.name,
+        content: text,
+      });
+    };
+    reader.readAsText(file);
+  };
+
   const fetchLLMTitle = async (sessionId: string, userPrompt: string) => {
     try {
       const res = await fetch('/api/title', {
@@ -78,10 +97,7 @@ export default function Home() {
         body: JSON.stringify({ message: userPrompt }),
       });
 
-      if (!res.ok) {
-        console.warn('제목 생성 응답 실패:', res.status);
-        return;
-      }
+      if (!res.ok) return;
 
       const data = await res.json();
       if (data.title) {
@@ -114,7 +130,6 @@ export default function Home() {
     setCurrentSessionId(newId);
   };
 
-  // 실시간 추론 텍스트 중 가장 최근 1줄 추출
   const getLatestReasoningStep = (fullReasoning: string = '') => {
     if (!fullReasoning.trim()) return '생각을 정리하고 있습니다...';
 
@@ -129,22 +144,32 @@ export default function Home() {
   };
 
   const sendMessage = async () => {
-    if (!input.trim() || loading) return;
+    if ((!input.trim() && !selectedFile) || loading) return;
 
-    const userMsg: Message = { role: 'user', content: input };
+    // 파일이 첨부되어 있으면 프롬프트 내용 뒤에 붙여줍니다.
+    let fullPrompt = input;
+    let displayContent = input;
+
+    if (selectedFile) {
+      fullPrompt = `${input}\n\n[첨부 파일: ${selectedFile.name}]\n\`\`\`\n${selectedFile.content}\n\`\`\``;
+      displayContent = input ? `${input}\n\n📎 첨부파일: ${selectedFile.name}` : `📎 첨부파일: ${selectedFile.name}`;
+    }
+
+    const userMsg: Message = { role: 'user', content: displayContent };
     const newMessages = [...messages, userMsg];
 
     updateCurrentSessionMessages(newMessages);
 
-    const currentInput = input;
     const isFirstMessage = messages.length === 0;
     const targetSessionId = currentSessionId;
 
     setInput('');
+    setSelectedFile(null); // 전송 후 파일 초기화
+    if (fileInputRef.current) fileInputRef.current.value = '';
     setLoading(true);
 
     if (isFirstMessage) {
-      fetchLLMTitle(targetSessionId, currentInput);
+      fetchLLMTitle(targetSessionId, displayContent);
     }
 
     const assistantIndex = newMessages.length;
@@ -162,10 +187,10 @@ export default function Home() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: currentInput,
+          message: fullPrompt,
           reasoningEffort,
           model: selectedModel,
-          useMcp, // 🔌 MCP 토글 옵션 전달!
+          useMcp,
         }),
       });
 
@@ -348,7 +373,6 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-4">
-            {/* 🔌 MCP 연동 On/Off 토글 버튼 */}
             <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1">
               <span className="text-xs font-medium text-gray-500">MCP 연동</span>
               <button
@@ -417,8 +441,6 @@ export default function Home() {
                     </div>
                   ) : (
                     <div className="flex flex-col items-start pr-4 py-1 w-full gap-3 min-w-0 overflow-hidden">
-                      
-                      {/* 🤖 생각이 들어갈 카드 */}
                       {(m.reasoning || isGenerating) && (
                         <div className="flex items-start gap-2.5 w-full max-w-full min-w-0">
                           <div className="w-7 h-7 rounded-full bg-purple-100 border border-purple-200 flex items-center justify-center text-purple-600 text-xs shrink-0 mt-0.5">
@@ -448,7 +470,6 @@ export default function Home() {
                         </div>
                       )}
 
-                      {/* 마크다운 답변 본문 */}
                       {m.content && (
                         <div className="text-gray-800 text-base leading-relaxed w-full prose prose-base max-w-none pl-9 min-w-0 overflow-hidden">
                           <ReactMarkdown
@@ -485,39 +506,83 @@ export default function Home() {
           </div>
         </div>
 
-        {/* 하단 입력창 */}
+        {/* 📎 하단 입력창 + 파일 선택 영역 */}
         <div className="p-4 bg-white shrink-0">
-          <div className="max-w-3xl mx-auto flex items-end gap-2 bg-gray-50 rounded-2xl p-2.5 border border-gray-100 focus-within:border-pink-200 focus-within:ring-2 focus-within:ring-pink-50 transition shadow-2xs">
-            <textarea
-              rows={1}
-              value={input}
-              disabled={loading}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.nativeEvent.isComposing) return;
-                if (e.key === 'Enter' && e.shiftKey) {
-                  return;
-                }
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault();
-                  sendMessage();
-                }
-              }}
-              className="flex-1 bg-transparent px-3 py-1.5 text-base text-gray-800 focus:outline-none disabled:opacity-50 resize-none max-h-32 overflow-y-auto"
-              placeholder="메시지를 입력하세요..."
-            />
-            <button
-              onClick={sendMessage}
-              disabled={loading || !input.trim()}
-              className="bg-pink-400 hover:bg-pink-500 disabled:bg-gray-200 disabled:text-gray-400 text-white text-base font-medium px-4 py-2 rounded-xl transition shadow-2xs shrink-0"
-            >
-              전송
-            </button>
+          <div className="max-w-3xl mx-auto flex flex-col bg-gray-50 rounded-2xl p-2.5 border border-gray-100 focus-within:border-pink-200 focus-within:ring-2 focus-within:ring-pink-50 transition shadow-2xs">
+            
+            {/* 선택된 파일 미니 뱃지 표시 */}
+            {selectedFile && (
+              <div className="flex items-center gap-2 mb-2 px-3 py-1 bg-pink-100/70 border border-pink-200 text-pink-900 rounded-lg text-xs w-fit">
+                <span>📎 {selectedFile.name}</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedFile(null);
+                    if (fileInputRef.current) fileInputRef.current.value = '';
+                  }}
+                  className="hover:text-pink-600 font-bold ml-1"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+
+            <div className="flex items-end gap-2">
+              {/* 숨김 처리된 파일 input */}
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleFileChange}
+                className="hidden"
+              />
+
+              {/* 클립(📎) 파일 선택 버튼 */}
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="p-2 text-gray-400 hover:text-pink-500 hover:bg-pink-50 rounded-xl transition shrink-0"
+                title="파일 첨부하기"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
+                  />
+                </svg>
+              </button>
+
+              <textarea
+                rows={1}
+                value={input}
+                disabled={loading}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.nativeEvent.isComposing) return;
+                  if (e.key === 'Enter' && e.shiftKey) return;
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    sendMessage();
+                  }
+                }}
+                className="flex-1 bg-transparent px-2 py-1.5 text-base text-gray-800 focus:outline-none disabled:opacity-50 resize-none max-h-32 overflow-y-auto"
+                placeholder="메시지를 입력하거나 파일을 첨부해보세요..."
+              />
+
+              <button
+                onClick={sendMessage}
+                disabled={loading || (!input.trim() && !selectedFile)}
+                className="bg-pink-400 hover:bg-pink-500 disabled:bg-gray-200 disabled:text-gray-400 text-white text-base font-medium px-4 py-2 rounded-xl transition shadow-2xs shrink-0"
+              >
+                전송
+              </button>
+            </div>
           </div>
         </div>
       </main>
 
-      {/* 🌸 전체 '생각 보기' 모달 팝업 창 */}
+      {/* 🌸 모달 팝업 창 */}
       {activeModalReasoning && (
         <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl border border-gray-100 overflow-hidden flex flex-col max-h-[80vh]">

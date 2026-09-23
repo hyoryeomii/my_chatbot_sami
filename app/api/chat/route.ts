@@ -37,7 +37,6 @@ async function fetchWebPage(targetUrl: string) {
 async function callMcpTool(toolName: string, args: Record<string, any>) {
   let transport: StdioClientTransport | null = null;
   try {
-    // npx로 표준 MCP 서버를 자식 프로세스(Stdio)로 실행
     transport = new StdioClientTransport({
       command: 'npx',
       args: ['-y', '@modelcontextprotocol/server-everything'],
@@ -51,7 +50,6 @@ async function callMcpTool(toolName: string, args: Record<string, any>) {
     await client.connect(transport);
     console.log(`🔌 MCP 서버 연결 성공! [실행 요청 도구: ${toolName}]`);
 
-    // MCP 서버에 도구 실행 위임 (callTool)
     const result = await client.callTool({
       name: toolName,
       arguments: args,
@@ -70,7 +68,8 @@ async function callMcpTool(toolName: string, args: Record<string, any>) {
 
 export async function POST(req: Request) {
   try {
-    const { message, reasoningEffort, model } = await req.json();
+    // 1. 프론트엔드로부터 useMcp 토글 상태 수신
+    const { message, reasoningEffort, model, useMcp } = await req.json();
     const selectedModel = model || '빠른 모델 플러스';
 
     const SAMIGPT_API_URL = process.env.SAMIGPT_API_URL || 'https://gpt.samitech.kr/api/llm';
@@ -91,25 +90,37 @@ export async function POST(req: Request) {
       'X-Organization-Code': 'sami',
     };
 
-    // 1. 도구 판단 에이전트 프롬프트 (Tool Calling + MCP 하이브리드 지원)
-    const systemPrompt = `
-너는 오직 JSON만 출력하는 도구 판단 시스템이다. 절대로 질문에 대한 답변이나 인사, 안내 문구를 작성하지 마라.
+    // 2. useMcp 상태에 따라 동적으로 구성되는 systemPrompt
+    const systemPrompt = useMcp
+      ? `
+너는 오직 JSON만 출력하는 도구 판단 시스템이다. 절대로 질문에 대한 답변이나 안내 문구를 작성하지 마라.
 
 사용 가능한 도구:
-- fetch_web_page(url: string): [기존 도구] 웹페이지의 URL을 읽어서 텍스트 데이터를 반환함
+- fetch_web_page(url: string): 웹페이지의 URL(http:// 또는 https://)을 읽어서 텍스트 데이터를 반환함
 - mcp_echo(message: string): [MCP 도구] 입력받은 텍스트를 MCP 프로토콜로 에코 반환함
 
 규칙:
-1. 사용자의 질문에 URL(http:// 또는 https://)이 포함되어 있거나 특정 웹페이지 조회가 필요하면 무조건 pure JSON으로 응답해:
+1. 사용자의 질문에 실제 웹 URL(http:// 또는 https://)이 포함되어 있거나 특정 웹사이트 접속이 필요하면:
 {"tool": "fetch_web_page", "url": "추출한URL"}
 
-2. 만약 MCP 테스트 요청("MCP 테스트해줘", "MCP 에코 해줘" 등)이면 pure JSON으로 응답해:
+2. 만약 MCP 테스트/에코 요청이면:
 {"tool": "mcp_echo", "message": "사용자메시지"}
 
-3. 외부 도구가 필요 없는 일반 질문이면 반드시 단 한 단어만 출력해:
+3. 위 조건에 해당하지 않는 모든 질문은 무조건 단 한 단어만 출력해:
 NONE
+`
+      : `
+너는 오직 JSON만 출력하는 도구 판단 시스템이다. 절대로 질문에 대한 답변이나 안내 문구를 작성하지 마라.
 
-4. 마크다운 코드블럭(\`\`\`)이나 추가적인 설명을 절대로 붙이지 마라.
+사용 가능한 도구:
+- fetch_web_page(url: string): 웹페이지의 URL을 읽어서 텍스트 데이터를 반환함
+
+규칙:
+1. 사용자의 질문에 실제 웹 URL(http:// 또는 https://)이 직접 작성되어 있을 때만 pure JSON으로 응답해:
+{"tool": "fetch_web_page", "url": "추출한URL"}
+
+2. "MCP", "에코", "테스트" 등의 단어가 있더라도 URL이 직접 제시되지 않았다면 절대로 웹 페치를 실행하지 말고 무조건 단 한 단어만 출력해:
+NONE
 `;
 
     const checkResponse = await fetch(SAMIGPT_API_URL, {
@@ -140,14 +151,14 @@ NONE
         if (resultText.includes('{')) {
           const parsed = JSON.parse(resultText);
 
-          // 1) 기존 방식: 직접 웹 페치 실행 (Tool Calling)
+          // 1) 웹 페치 실행 (Tool Calling)
           if (parsed.tool === 'fetch_web_page' && parsed.url) {
             console.log('🌐 [Tool Calling] 웹 페치 진행 중... URL:', parsed.url);
             externalData = await fetchWebPage(parsed.url);
           }
 
-          // 2) MCP 방식: 외부 MCP 서버 프로세스에 도구 호출 위임!
-          else if (parsed.tool === 'mcp_echo') {
+          // 2) MCP 도구 실행 (토글이 ON일 때만 진행)
+          else if (parsed.tool === 'mcp_echo' && useMcp) {
             console.log('🔌 [MCP] 외부 MCP 서버에 echo 도구 실행 위임...');
             const mcpRes = await callMcpTool('echo', { message: parsed.message || message });
             if (mcpRes) externalData = mcpRes;
@@ -158,7 +169,7 @@ NONE
       }
     }
 
-    // 2. 최종 대화 스트리밍 요청
+    // 3. 최종 대화 스트리밍 요청
     const finalMessages = [
       {
         role: 'system',

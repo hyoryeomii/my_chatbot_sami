@@ -22,6 +22,7 @@ export default function Home() {
   const [input, setInput] = useState('');
   const [reasoningEffort, setReasoningEffort] = useState('medium');
   const [selectedModel, setSelectedModel] = useState('빠른 모델 플러스');
+  const [useMcp, setUseMcp] = useState(false); // 🔌 MCP 연결 토글 상태 (기본값: false)
   const [loading, setLoading] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
@@ -84,7 +85,6 @@ export default function Home() {
 
       const data = await res.json();
       if (data.title) {
-        // 말풍선 없이 제목만 깔끔하게 저장
         const cleanTitle = data.title.replace(/^💬\s*/, '');
         setSessions((prev) =>
           prev.map((s) => (s.id === sessionId ? { ...s, title: cleanTitle } : s))
@@ -117,7 +117,7 @@ export default function Home() {
   // 실시간 추론 텍스트 중 가장 최근 1줄 추출
   const getLatestReasoningStep = (fullReasoning: string = '') => {
     if (!fullReasoning.trim()) return '생각을 정리하고 있습니다...';
-    
+
     const lines = fullReasoning
       .split('\n')
       .map((l) => l.trim())
@@ -165,10 +165,10 @@ export default function Home() {
           message: currentInput,
           reasoningEffort,
           model: selectedModel,
+          useMcp, // 🔌 MCP 토글 옵션 전달!
         }),
       });
 
-      // 1. HTTP 오류 상태 (400, 500 등) 안전하게 걸러내기
       if (!res.ok) {
         const errData = await res.json().catch(() => ({ error: '알 수 없는 오류' }));
         updateCurrentSessionMessages((prev) => {
@@ -183,7 +183,6 @@ export default function Home() {
         return;
       }
 
-      // 2. 바디 스트림이 없는 경우 안전 처리 (res.json() 중복 호출 방지)
       if (!res.body) {
         updateCurrentSessionMessages((prev) => {
           const updated = [...prev];
@@ -202,12 +201,10 @@ export default function Home() {
       let done = false;
       let buffer = '';
 
-      // ⚡️ 템포감 있고 리드미컬한 스트리밍 버퍼 (단어/토큰 단위 배치)
       let chunkQueue: string[] = [];
 
       typingInterval = setInterval(() => {
         if (chunkQueue.length > 0) {
-          // 한 번에 2~3개 조각씩 신속하게 내보내어 템포감 부여
           const nextChunks = chunkQueue.splice(0, 2).join('');
           updateCurrentSessionMessages((prev) => {
             const updated = [...prev];
@@ -221,7 +218,7 @@ export default function Home() {
             );
           });
         }
-      }, 10); // 10ms 빠른 템포
+      }, 10);
 
       while (!done) {
         const { value, done: doneReading } = await reader.read();
@@ -271,7 +268,7 @@ export default function Home() {
       console.error(err);
       if (typingInterval) clearInterval(typingInterval);
       if (checkQueueFinish) clearInterval(checkQueueFinish);
-      
+
       updateCurrentSessionMessages((prev) => {
         const updated = [...prev];
         updated[assistantIndex] = {
@@ -351,6 +348,24 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-4">
+            {/* 🔌 MCP 연동 On/Off 토글 버튼 */}
+            <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1">
+              <span className="text-xs font-medium text-gray-500">MCP 연동</span>
+              <button
+                type="button"
+                onClick={() => setUseMcp(!useMcp)}
+                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                  useMcp ? 'bg-pink-500' : 'bg-gray-300'
+                }`}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                    useMcp ? 'translate-x-4' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
+
             <div className="flex items-center gap-2">
               <span className="text-xs font-medium text-gray-400">모델:</span>
               <select
@@ -403,7 +418,7 @@ export default function Home() {
                   ) : (
                     <div className="flex flex-col items-start pr-4 py-1 w-full gap-3 min-w-0 overflow-hidden">
                       
-                      {/* 🤖 채팅창 너비 내로 딱 맞추어진 생각 보기 카드 */}
+                      {/* 🤖 생각이 들어갈 카드 */}
                       {(m.reasoning || isGenerating) && (
                         <div className="flex items-start gap-2.5 w-full max-w-full min-w-0">
                           <div className="w-7 h-7 rounded-full bg-purple-100 border border-purple-200 flex items-center justify-center text-purple-600 text-xs shrink-0 mt-0.5">
@@ -424,7 +439,6 @@ export default function Home() {
                               </span>
                             </div>
 
-                            {/* 잘리지 않고 깔끔하게 말줄임 처리되는 한 줄 생각 */}
                             {isGenerating && (
                               <div className="text-xs text-gray-500 italic truncate font-normal w-full overflow-hidden">
                                 {getLatestReasoningStep(m.reasoning)}

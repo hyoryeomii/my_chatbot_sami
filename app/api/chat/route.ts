@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
 
-// tool calling
 async function getWeather(city: string, date: string = '오늘') {
   const isDaejeon = city.includes('대전') || city.toLowerCase().includes('daejeon');
   const targetCity = isDaejeon ? '대전' : city;
@@ -44,10 +43,8 @@ export async function POST(req: Request) {
       'X-Organization-Code': 'sami',
     };
 
-    // 1단계 시스템 프롬프트 (한국어 사고 강력 지침)
     const systemPrompt = `
 너는 도구 판단 에이전트야. 사용자의 질문을 분석해서 외부 도구 호출이 필요한지 판단해.
-CRITICAL INSTRUCTION: 너의 모든 내부 추론 및 사고 과정(Reasoning/CoT)은 절대로 영어를 쓰지 말고 오직 '한국어'로만 작성해라.
 
 사용 가능한 도구:
 - get_weather(city: string, date: string): 도시의 날씨 정보를 조회
@@ -58,10 +55,9 @@ CRITICAL INSTRUCTION: 너의 모든 내부 추론 및 사고 과정(Reasoning/Co
 2. 도시 이름이 없으면 기본값 "대전"을 사용해.
 3. 시점(오늘/내일 등)이 명시되지 않았다면 기본값 "오늘"을 사용해.
 4. 외부 도구가 필요 없는 일반 질문이면 반드시 "NONE"이라고 응답해.
-5. 설명이나 부연 설명, 마크다운 코드블럭(\`\`\`)을 절대 붙이지 마.
+5. 마크다운 코드블럭(\`\`\`)을 붙이지 마.
 `;
 
-    // 1차 호출: 도구 사용 필요 여부 판단
     const checkResponse = await fetch(SAMIGPT_API_URL, {
       method: 'POST',
       headers: requestHeaders,
@@ -92,30 +88,25 @@ CRITICAL INSTRUCTION: 너의 모든 내부 추론 및 사고 과정(Reasoning/Co
           const date = parsed.date || '오늘';
           externalData = await getWeather(city, date);
         }
-      } catch (e) {
-        // 파싱 실패 시 일반 대화 진행
-      }
+      } catch (e) {}
     }
 
-    // 2단계 프롬프트 (한국어 추론 유도 강화)
     const finalMessages = [
       {
         role: 'system',
-        content: `너는 친절하고 유용한 AI 비서이다.
-[중요 지침] 답변을 도출하기 위한 모든 사고 과정(Reasoning, Thinking process)은 반드시 100% 한국어로만 작성해야 한다. 영어나 다른 언어를 생각 과정에 사용하지 마라.`
+        content: `너는 친절하고 유용한 AI 비서이다.`
       }
     ];
 
     if (externalData) {
       finalMessages.push({
         role: 'system',
-        content: `다음은 조회된 외부 데이터이다. 이 데이터를 바탕으로 사용자의 질문에 친절하게 답변해라:\n${externalData}`
+        content: `다음은 조회된 외부 데이터이다. 이 데이터를 바탕으로 질문에 답변해라:\n${externalData}`
       });
     }
 
     finalMessages.push({ role: 'user', content: message });
 
-    // 2차 호출: 스트리밍 답변 생성
     const streamResponse = await fetch(SAMIGPT_API_URL, {
       method: 'POST',
       headers: requestHeaders,
@@ -123,7 +114,7 @@ CRITICAL INSTRUCTION: 너의 모든 내부 추론 및 사고 과정(Reasoning/Co
         model: selectedModel,
         messages: finalMessages,
         reasoning_effort: reasoningEffort || 'medium',
-        temperature: 1,
+        temperature: 0.7,
         stream: true,
         org_code: 'sami',
         organization: 'sami',
@@ -171,9 +162,7 @@ function createSSEStreamResponse(body: ReadableStream<Uint8Array>) {
                 );
               }
             }
-          } catch {
-            // 파싱 오류 무시
-          }
+          } catch {}
         }
       }
     },

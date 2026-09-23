@@ -25,7 +25,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
-  // 모달 팝업용 상태 (클릭한 메시지의 reasoning 저장)
+  // 모달 팝업용 상태
   const [activeModalReasoning, setActiveModalReasoning] = useState<string | null>(null);
 
   const [sessions, setSessions] = useState<ChatSession[]>([
@@ -68,6 +68,7 @@ export default function Home() {
     );
   };
 
+  // 💬 말풍선 이모지 제거된 제목 설정
   const fetchLLMTitle = async (sessionId: string, userPrompt: string) => {
     try {
       const res = await fetch('/api/title', {
@@ -77,8 +78,10 @@ export default function Home() {
       });
       const data = await res.json();
       if (data.title) {
+        // 말풍선 없이 제목만 깔끔하게 저장
+        const cleanTitle = data.title.replace(/^💬\s*/, '');
         setSessions((prev) =>
-          prev.map((s) => (s.id === sessionId ? { ...s, title: ` ${data.title}` } : s))
+          prev.map((s) => (s.id === sessionId ? { ...s, title: cleanTitle } : s))
         );
       }
     } catch (e) {
@@ -176,12 +179,13 @@ export default function Home() {
       let done = false;
       let buffer = '';
 
-      // 🌸 샤라락 타이핑을 위한 글자 큐(Queue)
-      let contentQueue: string[] = [];
+      // ⚡️ 템포감 있고 리드미컬한 스트리밍 버퍼 (단어/토큰 단위 배치)
+      let chunkQueue: string[] = [];
 
       const typingInterval = setInterval(() => {
-        if (contentQueue.length > 0) {
-          const nextChar = contentQueue.shift();
+        if (chunkQueue.length > 0) {
+          // 한 번에 2~3개 조각씩 신속하게 내보내어 템포감 부여
+          const nextChunks = chunkQueue.splice(0, 2).join('');
           updateCurrentSessionMessages((prev) => {
             const updated = [...prev];
             const currentMsg = updated[assistantIndex];
@@ -189,12 +193,12 @@ export default function Home() {
 
             return updated.map((msg, idx) =>
               idx === assistantIndex
-                ? { ...msg, content: (msg.content || '') + nextChar }
+                ? { ...msg, content: (msg.content || '') + nextChunks }
                 : msg
             );
           });
         }
-      }, 25);
+      }, 10); // 10ms 빠른 템포
 
       while (!done) {
         const { value, done: doneReading } = await reader.read();
@@ -224,7 +228,7 @@ export default function Home() {
             }
 
             if (content) {
-              contentQueue.push(...content.split(''));
+              chunkQueue.push(content);
             }
           } catch (e) {
             console.error('JSON 파싱 에러:', e);
@@ -233,12 +237,12 @@ export default function Home() {
       }
 
       const checkQueueFinish = setInterval(() => {
-        if (contentQueue.length === 0) {
+        if (chunkQueue.length === 0) {
           clearInterval(typingInterval);
           clearInterval(checkQueueFinish);
           setLoading(false);
         }
-      }, 100);
+      }, 50);
 
     } catch (err) {
       console.error(err);
@@ -291,8 +295,8 @@ export default function Home() {
                 onClick={() => setCurrentSessionId(session.id)}
                 className={`w-full text-left px-3 py-2.5 rounded-xl text-sm truncate transition ${
                   session.id === currentSessionId
-                    ? 'bg-pink-100/80 font-semibold text-pink-950'
-                    : 'text-gray-600 hover:bg-pink-100/40 hover:text-gray-900'
+                    ? 'bg-pink-100/80 font-normal text-pink-950' /* 얇은 정돈된 폰트 적용 */
+                    : 'text-gray-600 hover:bg-pink-100/40 hover:text-gray-900 font-normal'
                 }`}
               >
                 {session.title || '새 대화'}
@@ -303,7 +307,7 @@ export default function Home() {
       </aside>
 
       {/* 💬 2. 메인 영역 */}
-      <main className="flex-1 flex flex-col h-screen bg-white relative overflow-hidden">
+      <main className="flex-1 flex flex-col h-screen bg-white relative overflow-hidden min-w-0">
         {/* 헤더 */}
         <header className="px-6 py-4 flex items-center justify-between bg-white shrink-0 z-10 border-b border-gray-50">
           <div className="flex items-center gap-3">
@@ -352,7 +356,7 @@ export default function Home() {
 
         {/* 📜 채팅 메시지 스크롤 영역 */}
         <div ref={chatContainerRef} className="flex-1 overflow-y-auto">
-          <div className="max-w-3xl mx-auto px-6 pt-4 pb-12 space-y-6">
+          <div className="max-w-3xl mx-auto px-6 pt-4 pb-12 space-y-6 min-w-0">
             {messages.length === 0 && (
               <div className="h-[60vh] flex flex-col items-center justify-center text-gray-300 text-base">
                 <p>궁금한 점을 자유롭게 입력해 주세요!</p>
@@ -363,7 +367,7 @@ export default function Home() {
               const isGenerating = loading && i === messages.length - 1;
 
               return (
-                <div key={i} className="flex flex-col space-y-2">
+                <div key={i} className="flex flex-col space-y-2 min-w-0">
                   {m.role === 'user' ? (
                     <div className="flex justify-end">
                       <div className="bg-pink-100/80 text-pink-950 px-4.5 py-3 rounded-2xl max-w-[80%] text-base leading-relaxed shadow-2xs whitespace-pre-wrap">
@@ -371,34 +375,32 @@ export default function Home() {
                       </div>
                     </div>
                   ) : (
-                    <div className="flex flex-col items-start pr-4 py-1 w-full gap-3">
+                    <div className="flex flex-col items-start pr-4 py-1 w-full gap-3 min-w-0 overflow-hidden">
                       
-                      {/* 🤖 2, 3번째 사진처럼 상단 아이콘 + 카드 박스 디자인 구현 */}
+                      {/* 🤖 채팅창 너비 내로 딱 맞추어진 생각 보기 카드 */}
                       {(m.reasoning || isGenerating) && (
-                        <div className="flex items-start gap-2.5 w-full">
-                          {/* 🤖 로봇 아이콘 */}
+                        <div className="flex items-start gap-2.5 w-full max-w-full min-w-0">
                           <div className="w-7 h-7 rounded-full bg-purple-100 border border-purple-200 flex items-center justify-center text-purple-600 text-xs shrink-0 mt-0.5">
                             🤖
                           </div>
 
-                          {/* 카드 박스 (2, 3번 스크린샷과 동일한 스타일) */}
                           <div
                             onClick={() => m.reasoning && setActiveModalReasoning(m.reasoning)}
-                            className={`flex-1 border border-gray-200/80 bg-gray-50/50 hover:bg-gray-50 rounded-xl p-3 transition cursor-pointer shadow-2xs group relative`}
+                            className="flex-1 border border-gray-200/80 bg-gray-50/50 hover:bg-gray-50 rounded-xl p-3 transition cursor-pointer shadow-2xs group relative max-w-full min-w-0 overflow-hidden"
                           >
                             <div className="flex items-center justify-between text-xs font-semibold text-gray-700 mb-1">
                               <div className="flex items-center gap-2">
                                 <span className={`w-2 h-2 rounded-full ${isGenerating ? 'bg-blue-500 animate-ping' : 'bg-gray-400'}`} />
                                 <span>{isGenerating ? '생각중...' : '생각 완료'}</span>
                               </div>
-                              <span className="text-gray-400 group-hover:text-purple-600 text-[10px] transition">
+                              <span className="text-gray-400 group-hover:text-purple-600 text-[10px] transition shrink-0 ml-2">
                                 ▼ 클릭해서 전체 생각 보기
                               </span>
                             </div>
 
-                            {/* 실시간 생각 문장 흐름 (2, 3번 사진처럼 이탤릭 소형 텍스트) */}
+                            {/* 잘리지 않고 깔끔하게 말줄임 처리되는 한 줄 생각 */}
                             {isGenerating && (
-                              <div className="text-xs text-gray-500 italic truncate font-normal">
+                              <div className="text-xs text-gray-500 italic truncate font-normal w-full overflow-hidden">
                                 {getLatestReasoningStep(m.reasoning)}
                               </div>
                             )}
@@ -408,7 +410,7 @@ export default function Home() {
 
                       {/* 마크다운 답변 본문 */}
                       {m.content && (
-                        <div className="text-gray-800 text-base leading-relaxed w-full prose prose-base max-w-none pl-9">
+                        <div className="text-gray-800 text-base leading-relaxed w-full prose prose-base max-w-none pl-9 min-w-0 overflow-hidden">
                           <ReactMarkdown
                             remarkPlugins={[remarkGfm]}
                             components={{
@@ -475,11 +477,10 @@ export default function Home() {
         </div>
       </main>
 
-      {/* 🌸 5번째 사진과 동일한 '생각 보기' 모달 팝업 창 */}
+      {/* 🌸 전체 '생각 보기' 모달 팝업 창 */}
       {activeModalReasoning && (
         <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl border border-gray-100 overflow-hidden flex flex-col max-h-[80vh]">
-            {/* 모달 상단 헤더 */}
             <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between bg-gray-50/50">
               <div className="flex items-center gap-2">
                 <span className="text-lg">🤖</span>
@@ -493,7 +494,6 @@ export default function Home() {
               </button>
             </div>
 
-            {/* 모달 본문 (5번 사진 스타일: 다크 스타일 코드블록 내 추론 출력) */}
             <div className="p-6 overflow-y-auto flex-1 bg-white">
               <div className="bg-gray-900 text-gray-200 p-4 rounded-xl font-mono text-xs leading-relaxed whitespace-pre-wrap overflow-x-auto shadow-inner border border-gray-800">
                 {activeModalReasoning}

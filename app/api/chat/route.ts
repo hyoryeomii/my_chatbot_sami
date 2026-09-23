@@ -33,12 +33,12 @@ async function fetchWebPage(targetUrl: string) {
   }
 }
 
-// 🔌 [방법 2] MCP(Model Context Protocol) 클라이언트 연동 함수
+// 🔌 [방법 2] Filesystem MCP(Model Context Protocol) 클라이언트 연동 함수
 async function callMcpTool(toolName: string, args: Record<string, any>) {
   let transport: StdioClientTransport | null = null;
   try {
     // 허용할 디렉토리 경로 지정 (프로젝트 루트 경로)
-    const allowedPath = process.cwd(); 
+    const allowedPath = process.cwd();
 
     transport = new StdioClientTransport({
       command: 'npx',
@@ -116,7 +116,19 @@ export async function POST(req: Request) {
 4. 그 외 일반 질문은 무조건 단 한 단어만 출력해:
 NONE
 `
-      : `/* 기존 useMcp === false 일 때의 프롬프트 유지 */`;
+      : `
+너는 오직 JSON만 출력하는 도구 판단 시스템이다. 절대로 질문에 대한 답변이나 안내 문구를 작성하지 마라.
+
+사용 가능한 도구:
+- fetch_web_page(url: string): 웹페이지의 URL을 읽어서 텍스트 데이터를 반환함
+
+규칙:
+1. 사용자의 질문에 실제 웹 URL(http:// 또는 https://)이 포함되어 있을 때만 pure JSON으로 응답해:
+{"tool": "fetch_web_page", "url": "추출한URL"}
+
+2. 위 조건에 해당하지 않거나 파일/MCP 관련 질문이라도 URL이 없으면 무조건 단 한 단어만 출력해:
+NONE
+`;
 
     const checkResponse = await fetch(SAMIGPT_API_URL, {
       method: 'POST',
@@ -163,12 +175,13 @@ NONE
           else if (parsed.tool === 'read_file' && useMcp) {
             console.log('📄 [MCP] 파일 읽는 중... File:', parsed.path);
             const mcpRes = await callMcpTool('read_file', { path: parsed.path });
-            if (mcpRes) externalData = mcpRes; // 👈 이 부분이 누락되었었습니다!
+            if (mcpRes) externalData = mcpRes;
           }
         }
       } catch (e) {
         console.error('도구 응답 파싱 에러:', e);
       }
+    }
 
     // 3. 최종 대화 스트리밍 요청
     const finalMessages = [

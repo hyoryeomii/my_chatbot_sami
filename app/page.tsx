@@ -76,6 +76,12 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: userPrompt }),
       });
+
+      if (!res.ok) {
+        console.warn('제목 생성 응답 실패:', res.status);
+        return;
+      }
+
       const data = await res.json();
       if (data.title) {
         // 말풍선 없이 제목만 깔끔하게 저장
@@ -85,7 +91,7 @@ export default function Home() {
         );
       }
     } catch (e) {
-      console.error('제목 생성 중 에러:', e);
+      console.error('제목 생성 중 파싱 에러 방지:', e);
     }
   };
 
@@ -148,6 +154,9 @@ export default function Home() {
       { role: 'assistant', content: '', reasoning: '' },
     ]);
 
+    let typingInterval: NodeJS.Timeout | null = null;
+    let checkQueueFinish: NodeJS.Timeout | null = null;
+
     try {
       const res = await fetch('/api/chat', {
         method: 'POST',
@@ -159,14 +168,28 @@ export default function Home() {
         }),
       });
 
-      if (!res.body) {
-        const data = await res.json();
+      // 1. HTTP 오류 상태 (400, 500 등) 안전하게 걸러내기
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({ error: '알 수 없는 오류' }));
         updateCurrentSessionMessages((prev) => {
           const updated = [...prev];
           updated[assistantIndex] = {
             role: 'assistant',
-            content: data.reply || data.content,
-            reasoning: data.reasoning_content || '',
+            content: `⚠️ 오류가 발생했습니다: ${errData.error || '서버 응답 오류'}`,
+          };
+          return updated;
+        });
+        setLoading(false);
+        return;
+      }
+
+      // 2. 바디 스트림이 없는 경우 안전 처리 (res.json() 중복 호출 방지)
+      if (!res.body) {
+        updateCurrentSessionMessages((prev) => {
+          const updated = [...prev];
+          updated[assistantIndex] = {
+            role: 'assistant',
+            content: '⚠️ 응답 데이터를 받아올 수 없습니다.',
           };
           return updated;
         });
@@ -182,7 +205,7 @@ export default function Home() {
       // ⚡️ 템포감 있고 리드미컬한 스트리밍 버퍼 (단어/토큰 단위 배치)
       let chunkQueue: string[] = [];
 
-      const typingInterval = setInterval(() => {
+      typingInterval = setInterval(() => {
         if (chunkQueue.length > 0) {
           // 한 번에 2~3개 조각씩 신속하게 내보내어 템포감 부여
           const nextChunks = chunkQueue.splice(0, 2).join('');
@@ -236,16 +259,19 @@ export default function Home() {
         }
       }
 
-      const checkQueueFinish = setInterval(() => {
+      checkQueueFinish = setInterval(() => {
         if (chunkQueue.length === 0) {
-          clearInterval(typingInterval);
-          clearInterval(checkQueueFinish);
+          if (typingInterval) clearInterval(typingInterval);
+          if (checkQueueFinish) clearInterval(checkQueueFinish);
           setLoading(false);
         }
       }, 50);
 
     } catch (err) {
       console.error(err);
+      if (typingInterval) clearInterval(typingInterval);
+      if (checkQueueFinish) clearInterval(checkQueueFinish);
+      
       updateCurrentSessionMessages((prev) => {
         const updated = [...prev];
         updated[assistantIndex] = {
@@ -295,7 +321,7 @@ export default function Home() {
                 onClick={() => setCurrentSessionId(session.id)}
                 className={`w-full text-left px-3 py-2.5 rounded-xl text-sm truncate transition ${
                   session.id === currentSessionId
-                    ? 'bg-pink-100/80 font-normal text-pink-950' /* 얇은 정돈된 폰트 적용 */
+                    ? 'bg-pink-100/80 font-normal text-pink-950'
                     : 'text-gray-600 hover:bg-pink-100/40 hover:text-gray-900 font-normal'
                 }`}
               >

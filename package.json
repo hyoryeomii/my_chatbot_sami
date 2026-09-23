@@ -9,6 +9,9 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/server-everything": "^2026.8.31",
+    "cheerio": "^1.2.0",
     "next": "16.3.5",
     "react": "19.2.8",
     "react-dom": "19.2.8",

@@ -1,27 +1,71 @@
 import { NextResponse } from 'next/server';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
-async function getWeather(city: string, date: string = '오늘') {
-  const isDaejeon = city.includes('대전') || city.toLowerCase().includes('daejeon');
-  const targetCity = isDaejeon ? '대전' : city;
-
-  if (date.includes('내일')) {
-    return JSON.stringify({
-      location: targetCity,
-      target_date: '내일',
-      temperature: '20°C',
-      condition: '흐림 (오후 한때 비)',
-      humidity: '65%',
-      rain_probability: '60%'
+// 🌐 [방법 1] 기존 직접 구현한 웹 페치(Web Fetch) 함수 (Tool Calling 유지)
+async function fetchWebPage(targetUrl: string) {
+  try {
+    const res = await fetch(targetUrl, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
     });
-  }
 
-  return JSON.stringify({
-    location: targetCity,
-    target_date: '오늘',
-    temperature: '22°C',
-    condition: '맑음',
-    humidity: '45%'
-  });
+    if (!res.ok) {
+      return JSON.stringify({ error: `페이지를 불러올 수 없습니다. (Status: ${res.status})` });
+    }
+
+    const html = await res.text();
+
+    const cleanText = html
+      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+      .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 2000);
+
+    return JSON.stringify({ url: targetUrl, content: cleanText });
+  } catch (error) {
+    console.error('웹 페치 실패:', error);
+    return JSON.stringify({ error: '웹페이지 정보를 읽어오는 데 실패했습니다.' });
+  }
+}
+
+// 🔌 [방법 2] MCP(Model Context Protocol) 클라이언트 연동 함수
+async function callMcpTool(toolName: string, args: Record<string, any>) {
+  let transport: StdioClientTransport | null = null;
+  try {
+    // npx로 표준 MCP 서버를 자식 프로세스(Stdio)로 실행
+    transport = new StdioClientTransport({
+      command: 'npx',
+      args: ['-y', '@modelcontextprotocol/server-everything'],
+    });
+
+    const client = new Client(
+      { name: 'samigpt-client', version: '1.0.0' },
+      { capabilities: {} }
+    );
+
+    await client.connect(transport);
+    console.log(`🔌 MCP 서버 연결 성공! [실행 요청 도구: ${toolName}]`);
+
+    // MCP 서버에 도구 실행 위임 (callTool)
+    const result = await client.callTool({
+      name: toolName,
+      arguments: args,
+    });
+
+    await client.close();
+    return JSON.stringify(result);
+  } catch (error) {
+    console.error('MCP 도구 실행 에러:', error);
+    if (transport) {
+      try { await transport.close(); } catch (_) {}
+    }
+    return null;
+  }
 }
 
 export async function POST(req: Request) {
@@ -30,32 +74,42 @@ export async function POST(req: Request) {
     const selectedModel = model || '빠른 모델 플러스';
 
     const SAMIGPT_API_URL = process.env.SAMIGPT_API_URL || 'https://gpt.samitech.kr/api/llm';
-    const SAMIGPT_API_KEY = process.env.SAMIGPT_API_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjaGVjayI6ZmFsc2UsInVzZXJuYW1lIjoiZ3lmdWQ1MjE2IiwiZXhwIjo4OTQyOTQ1NzIxfQ.gGr6plsCOZkz-3FociJUsPSjH8E2SnGWPf6q0M8AY84';
-    const USER_COOKIE = process.env.USER_COOKIE || '__Host-next-auth.csrf-token-gpt=...';
+    const SAMIGPT_API_KEY =
+      process.env.SAMIGPT_API_KEY ||
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjaGVjayI6ZmFsc2UsInVzZXJuYW1lIjoiZ3lmdWQ1MjE2IiwiZXhwIjo0OTQyOTQ1NzIxfQ.gGr6plsCOZkz-3FociJUsPSjH8E2SnGWPf6q0M8AY84';
+    const USER_COOKIE =
+      process.env.USER_COOKIE ||
+      '__Host-next-auth.csrf-token-gpt=db7ee97142721316dcdd2e2e3015282f29289e14f3b4dc8125cbea74a818ad91%7C27a14d937d24e3890abe56455c4206cae332e895e2b251e9d55aae63adc8be38; __Secure-next-auth.callback-url-gpt=http%3A%2F%2Flocalhost%3A3000; __Secure-next-auth.session-token-gpt=eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..QoP6GSzrpFrpIyCi.STcMukaN7-I06BZc9ZdNQNaPUruL1fi1sQHjWpedVUiUgKv-tzwarqzLMDeD3s6Sk11VFVqjNNsiSXU2XwRySKZzSm_pjKrXJZuy3yFiUCK_DPRnd4VNxi2Ytj8HRMBXsJXZOX1XbbNjUkKdmwu6K6f37xK2XUeQHYPrY9k-4Tj7ACIaHUdBHrjI2dXRTnHi2dOecm_WL5WdaUh0VJkOiE4g4CZDbNad_WXNaIL_-LDMu9BY8Vw1kzkHncXpSyYG6JDz5XIC-RnklKl0fe-ATDFuEs3BiwSqllq9AsuDNenDAaieep39tO6wdxUFDP6KdT57uxX3-jsYE23cjyHsvZ4d_PYvVkgJlJdqbS--I2_MUwpTLTnDm9UxtGzpLAmpi-8jn5cEZKiTLL7RHphVjPG32mTP7nIxIprD2ujcRGvd5jfBewSkaPsN8tBTEXZXnM6G8aFzz1X-n28gPoQzK1ymrP0bX81KablBvqy0CY9jlcq5q_6Vqy1SeP7mw50Qji76abBaIXaZTve98okvU8XlrCG4tnmE1dxOMxRJPT8r8evlBY0j5BNbiDXQzNGjUJ17wayTaVhmczYON9p6dFTO0bHiXrG7DUXvT3LzgwDHnnZe4uD8_shdl83QyDlFuT50rhB5AnjVwUEnscf8NJjtFEsqAibpUiaOmZPYdag5ubRVnS_eXWfYWA9IsiHbPnS5ntbYcw_sPKHc3o0hjU_RZHbWoZVBM_d0OeTvsBTgRUiyZPNBUnPlsDsrTKAbY4k_NTApwd9ZXF3ACtW7njaSah32qzzxPA3G5p3ywbRkyNofwrodLArdg3yj6X9BWNM.2j3992k0toJ6Nhrcts5xXQ';
 
     const requestHeaders = {
-      'Accept': 'text/event-stream, application/json, */*',
+      Accept: 'text/event-stream, application/json, */*',
       'Content-Type': 'application/json; charset=utf-8',
-      'Authorization': `Bearer ${SAMIGPT_API_KEY}`,
-      'Cookie': USER_COOKIE,
+      Authorization: `Bearer ${SAMIGPT_API_KEY}`,
+      Cookie: USER_COOKIE,
       'Chat-Session-Id': 'flove-main-94d5bae8a409cd2baec4a61144f857f3',
-      'Organization': 'sami',
+      Organization: 'sami',
       'X-Organization-Code': 'sami',
     };
 
+    // 1. 도구 판단 에이전트 프롬프트 (Tool Calling + MCP 하이브리드 지원)
     const systemPrompt = `
-너는 도구 판단 에이전트야. 사용자의 질문을 분석해서 외부 도구 호출이 필요한지 판단해.
+너는 오직 JSON만 출력하는 도구 판단 시스템이다. 절대로 질문에 대한 답변이나 인사, 안내 문구를 작성하지 마라.
 
 사용 가능한 도구:
-- get_weather(city: string, date: string): 도시의 날씨 정보를 조회
+- fetch_web_page(url: string): [기존 도구] 웹페이지의 URL을 읽어서 텍스트 데이터를 반환함
+- mcp_echo(message: string): [MCP 도구] 입력받은 텍스트를 MCP 프로토콜로 에코 반환함
 
 규칙:
-1. 날씨 관련 질문이면 반드시 다음과 같은 pure JSON 형식으로만 응답해:
-{"tool": "get_weather", "city": "도시이름", "date": "오늘 또는 내일"}
-2. 도시 이름이 없으면 기본값 "대전"을 사용해.
-3. 시점(오늘/내일 등)이 명시되지 않았다면 기본값 "오늘"을 사용해.
-4. 외부 도구가 필요 없는 일반 질문이면 반드시 "NONE"이라고 응답해.
-5. 마크다운 코드블럭(\`\`\`)을 붙이지 마.
+1. 사용자의 질문에 URL(http:// 또는 https://)이 포함되어 있거나 특정 웹페이지 조회가 필요하면 무조건 pure JSON으로 응답해:
+{"tool": "fetch_web_page", "url": "추출한URL"}
+
+2. 만약 MCP 테스트 요청("MCP 테스트해줘", "MCP 에코 해줘" 등)이면 pure JSON으로 응답해:
+{"tool": "mcp_echo", "message": "사용자메시지"}
+
+3. 외부 도구가 필요 없는 일반 질문이면 반드시 단 한 단어만 출력해:
+NONE
+
+4. 마크다운 코드블럭(\`\`\`)이나 추가적인 설명을 절대로 붙이지 마라.
 `;
 
     const checkResponse = await fetch(SAMIGPT_API_URL, {
@@ -65,7 +119,7 @@ export async function POST(req: Request) {
         model: selectedModel,
         messages: [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: message }
+          { role: 'user', content: message },
         ],
         reasoning_effort: reasoningEffort || 'medium',
         temperature: 0,
@@ -75,33 +129,47 @@ export async function POST(req: Request) {
       }),
     });
 
-    const checkData = await checkResponse.json();
-    const resultText = checkData.choices?.[0]?.message?.content?.trim() || '';
-
     let externalData = '';
+    if (checkResponse.ok) {
+      const checkData = await checkResponse.json();
+      const resultText = checkData.choices?.[0]?.message?.content?.trim() || '';
 
-    if (resultText.includes('get_weather')) {
+      console.log('🤖 도구 판단 에이전트 응답:', resultText);
+
       try {
-        const parsed = JSON.parse(resultText);
-        if (parsed.tool === 'get_weather') {
-          const city = parsed.city || '대전';
-          const date = parsed.date || '오늘';
-          externalData = await getWeather(city, date);
+        if (resultText.includes('{')) {
+          const parsed = JSON.parse(resultText);
+
+          // 1) 기존 방식: 직접 웹 페치 실행 (Tool Calling)
+          if (parsed.tool === 'fetch_web_page' && parsed.url) {
+            console.log('🌐 [Tool Calling] 웹 페치 진행 중... URL:', parsed.url);
+            externalData = await fetchWebPage(parsed.url);
+          }
+
+          // 2) MCP 방식: 외부 MCP 서버 프로세스에 도구 호출 위임!
+          else if (parsed.tool === 'mcp_echo') {
+            console.log('🔌 [MCP] 외부 MCP 서버에 echo 도구 실행 위임...');
+            const mcpRes = await callMcpTool('echo', { message: parsed.message || message });
+            if (mcpRes) externalData = mcpRes;
+          }
         }
-      } catch (e) {}
+      } catch (e) {
+        console.error('도구 응답 파싱 에러:', e);
+      }
     }
 
+    // 2. 최종 대화 스트리밍 요청
     const finalMessages = [
       {
         role: 'system',
-        content: `너는 친절하고 유용한 AI 비서이다.`
-      }
+        content: `너는 친절하고 유용한 AI 비서이다. 외부 데이터(웹 페치 또는 MCP 도구 결과)가 제공되면 그 내용을 바탕으로 사용자의 질문에 명확하게 답변해라.`,
+      },
     ];
 
     if (externalData) {
       finalMessages.push({
         role: 'system',
-        content: `다음은 조회된 외부 데이터이다. 이 데이터를 바탕으로 질문에 답변해라:\n${externalData}`
+        content: `다음은 수집된 외부 데이터이다:\n${externalData}`,
       });
     }
 
@@ -121,15 +189,23 @@ export async function POST(req: Request) {
       }),
     });
 
+    if (!streamResponse.ok) {
+      const errorText = await streamResponse.text();
+      console.error('사미GPT 응답 에러:', streamResponse.status, errorText);
+      return NextResponse.json(
+        { error: `사미GPT API 오류 (${streamResponse.status})` },
+        { status: streamResponse.status }
+      );
+    }
+
     if (!streamResponse.body) {
       return NextResponse.json({ error: 'No response body' }, { status: 500 });
     }
 
     return createSSEStreamResponse(streamResponse.body);
-
   } catch (error) {
-    console.error('사미GPT 연동 에러:', error);
-    return NextResponse.json({ error: '사미GPT 서버 통신 실패' }, { status: 500 });
+    console.error('백엔드 연동 에러:', error);
+    return NextResponse.json({ error: '서버 내부 통신 실패' }, { status: 500 });
   }
 }
 
@@ -150,6 +226,18 @@ function createSSEStreamResponse(body: ReadableStream<Uint8Array>) {
 
           try {
             const parsed = JSON.parse(dataStr);
+
+            if (parsed.error) {
+              controller.enqueue(
+                encoder.encode(
+                  JSON.stringify({
+                    content: `[오류: ${parsed.error.message || 'API 오류'}]`,
+                  }) + '\n'
+                )
+              );
+              continue;
+            }
+
             const delta = parsed.choices?.[0]?.delta;
 
             if (delta) {
@@ -162,7 +250,9 @@ function createSSEStreamResponse(body: ReadableStream<Uint8Array>) {
                 );
               }
             }
-          } catch {}
+          } catch (e) {
+            // JSON 파싱 무시
+          }
         }
       }
     },

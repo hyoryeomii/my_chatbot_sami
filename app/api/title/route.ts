@@ -1,4 +1,3 @@
-// app/api/title/route.ts
 import { NextResponse } from 'next/server';
 
 export async function POST(req: Request) {
@@ -12,7 +11,7 @@ export async function POST(req: Request) {
     const response = await fetch(SAMIGPT_API_URL, {
       method: 'POST',
       headers: {
-        'Accept': 'application/json',
+        'Accept': 'application/json, text/plain, */*',
         'Content-Type': 'application/json; charset=utf-8',
         'Authorization': `Bearer ${SAMIGPT_API_KEY}`,
         'Cookie': USER_COOKIE,
@@ -20,26 +19,46 @@ export async function POST(req: Request) {
         'X-Organization-Code': 'sami',
       },
       body: JSON.stringify({
-        // 💡 제목 생성에는 속도가 빠르고 가벼운 모델 지정
-        model: "빠른 모델", 
+        model: "빠른 모델 플러스", 
         messages: [
           { 
             role: "user", 
             content: `다음 대화 내용의 요약 제목을 5자~10자 이내로 핵심만 간단히 작성해줘:\n\n"${message}"` 
           }
         ],
-        stream: false, // 제목은 스트리밍 불필요
+        stream: false,
         org_code: "sami",
         organization: "sami",
       }),
     });
 
-    const data = await response.json();
-    const title = data.choices?.[0]?.message?.content?.trim() || "새로운 대화";
+    if (!response.ok) {
+      console.warn('SAMIGPT 제목 생성 응답 실패 Status:', response.status);
+      return NextResponse.json({ title: "새 대화" });
+    }
+
+    // 1. 응답을 일단 raw 텍스트로 가져옴
+    const rawText = await response.text();
+    let data: any = {};
+
+    // 2. data: 프리픽스가 붙은 스트림 형태일 경우 감싸는 'data: ' 문자열 제거 후 파싱
+    let cleanText = rawText.trim();
+    if (cleanText.startsWith('data: ')) {
+      cleanText = cleanText.replace(/^data:\s*/, '').replace(/\n$/, '');
+    }
+
+    try {
+      data = JSON.parse(cleanText);
+    } catch (e) {
+      console.error('제목 JSON 파싱 실패, raw text:', rawText);
+      return NextResponse.json({ title: "새 대화" });
+    }
+
+    const title = data.choices?.[0]?.message?.content?.trim() || "새 대화";
 
     return NextResponse.json({ title });
   } catch (error) {
     console.error('제목 생성 에러:', error);
-    return NextResponse.json({ title: "새로운 대화" });
+    return NextResponse.json({ title: "새 대화" });
   }
 }

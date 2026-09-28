@@ -5,6 +5,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 interface Message {
+  id: string;
   role: 'user' | 'assistant';
   content: string;
   reasoning?: string;
@@ -23,15 +24,19 @@ export default function Home() {
   const [input, setInput] = useState('');
   const [reasoningEffort, setReasoningEffort] = useState('medium');
   const [selectedModel, setSelectedModel] = useState('빠른 모델 플러스');
-  const [useMcp, setUseMcp] = useState(false);
+  
+  // MCP 토글 상태 (GitHub / Notion)
+  const [useGithubMcp, setUseGithubMcp] = useState(false);
+  const [useNotionMcp, setUseNotionMcp] = useState(false);
+  
   const [loading, setLoading] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
-  // MCP 경로 지정 모달 관련 상태
+  // MCP 경로 지정 모달
   const [isMcpModalOpen, setIsMcpModalOpen] = useState(false);
   const [mcpTargetPath, setMcpTargetPath] = useState('');
 
-  // 프론트엔드 파일 첨부 관련 상태
+  // 프론트엔드 파일 첨부
   const [selectedFile, setSelectedFile] = useState<{
     name: string;
     content: string;
@@ -39,7 +44,7 @@ export default function Home() {
   } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // 모달 팝업용 상태
+  // 생각 모달 상태
   const [activeModalReasoning, setActiveModalReasoning] = useState<string | null>(null);
 
   const [sessions, setSessions] = useState<ChatSession[]>([
@@ -58,6 +63,9 @@ export default function Home() {
   const currentSession = sessions.find((s) => s.id === currentSessionId) || sessions[0];
   const messages = currentSession ? currentSession.messages : [];
 
+  // 사용자 질문만 추출
+  const userQuestions = messages.filter((m) => m.role === 'user');
+
   useEffect(() => {
     if (chatContainerRef.current) {
       chatContainerRef.current.scrollTo({
@@ -65,7 +73,14 @@ export default function Home() {
         behavior: 'smooth',
       });
     }
-  }, [messages, loading]);
+  }, [messages.length, loading]);
+
+  const scrollToMessage = (msgId: string) => {
+    const element = document.getElementById(`msg-${msgId}`);
+    if (element) {
+      element.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
 
   const updateCurrentSessionMessages = (
     newMessages: Message[] | ((prev: Message[]) => Message[])
@@ -82,7 +97,6 @@ export default function Home() {
     );
   };
 
-  // 이미지 및 텍스트 파일 선택 처리
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -106,10 +120,8 @@ export default function Home() {
     }
   };
 
-  // MCP 경로 지정 후 요약 요청 함수
   const handleMcpPathSummary = (targetPath: string) => {
     if (!targetPath.trim()) return;
-    setUseMcp(true);
     setIsMcpModalOpen(false);
     
     const prompt = `MCP Filesystem 도구를 사용하여 '${targetPath}' 경로의 파일 또는 폴더 구조 및 내용을 읽고 핵심을 요약해줘.`;
@@ -134,7 +146,7 @@ export default function Home() {
         );
       }
     } catch (e) {
-      console.error('제목 생성 중 파싱 에러 방지:', e);
+      console.error('제목 생성 중 파싱 에러:', e);
     }
   };
 
@@ -159,15 +171,11 @@ export default function Home() {
 
   const getLatestReasoningStep = (fullReasoning: string = '') => {
     if (!fullReasoning.trim()) return '생각을 정리하고 있습니다...';
-
     const lines = fullReasoning
       .split('\n')
       .map((l) => l.trim())
       .filter((l) => l.length > 0);
-
-    if (lines.length === 0) return '생각을 정리하고 있습니다...';
-
-    return lines[lines.length - 1];
+    return lines.length === 0 ? '생각을 정리하고 있습니다...' : lines[lines.length - 1];
   };
 
   const sendMessageCustom = async (customText?: string) => {
@@ -191,7 +199,9 @@ export default function Home() {
       }
     }
 
+    const userMsgId = `msg-${Date.now()}`;
     const userMsg: Message = {
+      id: userMsgId,
       role: 'user',
       content: displayContent,
       imageUrl: userImageUrl,
@@ -213,10 +223,11 @@ export default function Home() {
     }
 
     const assistantIndex = newMessages.length;
+    const assistantMsgId = `msg-assistant-${Date.now()}`;
 
     updateCurrentSessionMessages((prev) => [
       ...prev,
-      { role: 'assistant', content: '', reasoning: '' },
+      { id: assistantMsgId, role: 'assistant', content: '', reasoning: '' },
     ]);
 
     let typingInterval: NodeJS.Timeout | null = null;
@@ -230,30 +241,17 @@ export default function Home() {
           message: fullPrompt,
           reasoningEffort,
           model: selectedModel,
-          useMcp,
+          useGithubMcp,
+          useNotionMcp,
         }),
       });
 
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({ error: '알 수 없는 오류' }));
+      if (!res.ok || !res.body) {
         updateCurrentSessionMessages((prev) => {
           const updated = [...prev];
           updated[assistantIndex] = {
-            role: 'assistant',
-            content: `⚠️ 오류가 발생했습니다: ${errData.error || '서버 응답 오류'}`,
-          };
-          return updated;
-        });
-        setLoading(false);
-        return;
-      }
-
-      if (!res.body) {
-        updateCurrentSessionMessages((prev) => {
-          const updated = [...prev];
-          updated[assistantIndex] = {
-            role: 'assistant',
-            content: '⚠️ 응답 데이터를 받아올 수 없습니다.',
+            ...updated[assistantIndex],
+            content: `⚠️ 오류가 발생했습니다. (상태 코드: ${res.status})`,
           };
           return updated;
         });
@@ -265,7 +263,6 @@ export default function Home() {
       const decoder = new TextDecoder();
       let done = false;
       let buffer = '';
-
       let chunkQueue: string[] = [];
 
       typingInterval = setInterval(() => {
@@ -337,7 +334,7 @@ export default function Home() {
       updateCurrentSessionMessages((prev) => {
         const updated = [...prev];
         updated[assistantIndex] = {
-          role: 'assistant',
+          ...updated[assistantIndex],
           content: '오류가 발생했습니다. 다시 시도해주세요.',
         };
         return updated;
@@ -351,10 +348,10 @@ export default function Home() {
       {/* 🌸 1. 사이드바 */}
       <aside
         className={`${
-          isSidebarOpen ? 'w-64' : 'w-0'
+          isSidebarOpen ? 'w-72' : 'w-0'
         } bg-pink-50/60 transition-all duration-300 ease-in-out flex flex-col border-r border-pink-100/50 overflow-hidden relative z-20 shrink-0`}
       >
-        <div className="p-4 flex flex-col h-full w-64">
+        <div className="p-4 flex flex-col h-full w-72">
           <div className="flex items-center justify-between mb-5 px-1">
             <h1 className="text-xl font-bold text-gray-800 tracking-tight">SAMI-GPT</h1>
             <button
@@ -370,10 +367,31 @@ export default function Home() {
 
           <button
             onClick={handleNewChat}
-            className="w-full bg-white hover:bg-pink-100/40 text-gray-700 font-medium py-2.5 px-4 rounded-full shadow-xs transition border border-pink-200/60 flex items-center justify-center gap-2 mb-6 text-sm"
+            className="w-full bg-white hover:bg-pink-100/40 text-gray-700 font-medium py-2.5 px-4 rounded-full shadow-xs transition border border-pink-200/60 flex items-center justify-center gap-2 mb-4 text-sm"
           >
             <span>+</span> 새 대화 시작하기
           </button>
+
+          {/* 📌 현재 대화 질문 바로가기 목록 */}
+          {userQuestions.length > 0 && (
+            <div className="mb-4">
+              <div className="text-xs font-semibold text-pink-600 mb-2 px-1 flex items-center gap-1">
+                <span></span> 현재 대화 질문 목록
+              </div>
+              <div className="max-h-36 overflow-y-auto space-y-1 pr-1 bg-pink-100/30 p-1.5 rounded-2xl border border-pink-100">
+                {userQuestions.map((q, idx) => (
+                  <button
+                    key={q.id}
+                    onClick={() => scrollToMessage(q.id)}
+                    className="w-full text-left px-3 py-1.5 rounded-xl text-xs text-gray-700 hover:bg-white hover:text-pink-600 transition truncate flex items-center gap-1.5"
+                  >
+                    <span className="text-[10px] text-pink-400 font-bold shrink-0">{idx + 1}.</span>
+                    <span className="truncate">{q.content}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="text-xs font-semibold text-gray-400 mb-2 px-1">이전 대화 목록</div>
           <div className="flex-1 overflow-y-auto space-y-1 pr-1">
@@ -412,12 +430,11 @@ export default function Home() {
             )}
           </div>
 
-          <div className="flex items-center gap-3">
-            {/* 🌸 MCP 탐색 경로 버튼 */}
+          <div className="flex items-center gap-3 flex-wrap">
+            {/* MCP 탐색 경로 버튼 */}
             <button
               onClick={() => setIsMcpModalOpen(true)}
               className="text-xs bg-pink-50/80 hover:bg-pink-100/80 border border-pink-200 text-pink-900 font-medium px-3 py-1.5 rounded-full transition flex items-center gap-1.5 shadow-2xs"
-              title="MCP 파일/폴더 요약 지정"
             >
               <svg className="w-3.5 h-3.5 text-pink-400" fill="currentColor" viewBox="0 0 20 20">
                 <path d="M2 6a2 2 0 012-2h4l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
@@ -425,72 +442,76 @@ export default function Home() {
               <span>MCP 탐색 경로</span>
             </button>
 
-            {/* MCP 연동 스위치 */}
+            {/* 🐙 GitHub MCP 토글 */}
             <div className="flex items-center gap-2 bg-pink-50/40 border border-pink-200/70 rounded-full px-3 py-1">
-              <span className="text-xs font-medium text-pink-900">MCP 연동</span>
+              <span className="text-xs font-medium text-pink-900">GitHub MCP</span>
               <button
                 type="button"
-                onClick={() => setUseMcp(!useMcp)}
-                className={`relative inline-flex h-4.5 w-8.5 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                  useMcp ? 'bg-pink-400' : 'bg-gray-200'
+                onClick={() => setUseGithubMcp(!useGithubMcp)}
+                className={`relative inline-flex h-4.5 w-8.5 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${
+                  useGithubMcp ? 'bg-pink-400' : 'bg-gray-200'
                 }`}
               >
                 <span
-                  className={`pointer-events-none inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-xs ring-0 transition duration-200 ease-in-out ${
-                    useMcp ? 'translate-x-4' : 'translate-x-0'
+                  className={`pointer-events-none inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-xs transition duration-200 ease-in-out ${
+                    useGithubMcp ? 'translate-x-4' : 'translate-x-0'
                   }`}
                 />
               </button>
             </div>
 
-            {/* 🌸 둥글둥글한 핑크 테두리 커스텀 모델 선택 박스 */}
-            <div className="flex items-center gap-1.5">
-              <span className="text-xs font-medium text-gray-400">모델:</span>
-              <div className="relative inline-block">
-                <select
-                  value={selectedModel}
-                  onChange={(e) => setSelectedModel(e.target.value)}
-                  className="appearance-none text-xs border border-pink-200 rounded-full pl-3 pr-7 py-1.5 bg-pink-50/30 font-medium text-gray-700 focus:outline-none focus:ring-2 focus:ring-pink-200/80 cursor-pointer hover:bg-pink-50/60 transition"
-                >
-                  <option value="빠른 모델">빠른 모델</option>
-                  <option value="빠른 모델 플러스">빠른 모델 플러스</option>
-                  <option value="기본 모델 플러스">기본 모델 플러스</option>
-                  <option value="생각하는 모델 플러스">생각하는 모델 플러스</option>
-                </select>
-                <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2.5 text-pink-400">
-                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                  </svg>
-                </div>
-              </div>
+            {/* 📝 Notion MCP 토글 */}
+            <div className="flex items-center gap-2 bg-pink-50/40 border border-pink-200/70 rounded-full px-3 py-1">
+              <span className="text-xs font-medium text-pink-900">Notion MCP</span>
+              <button
+                type="button"
+                onClick={() => setUseNotionMcp(!useNotionMcp)}
+                className={`relative inline-flex h-4.5 w-8.5 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${
+                  useNotionMcp ? 'bg-pink-400' : 'bg-gray-200'
+                }`}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-xs transition duration-200 ease-in-out ${
+                    useNotionMcp ? 'translate-x-4' : 'translate-x-0'
+                  }`}
+                />
+              </button>
             </div>
 
-            {/* 🌸 둥글둥글한 핑크 테두리 커스텀 추론 강도 선택 박스 */}
+            {/* 모델 선택 */}
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs font-medium text-gray-400">모델:</span>
+              <select
+                value={selectedModel}
+                onChange={(e) => setSelectedModel(e.target.value)}
+                className="text-xs border border-pink-200 rounded-full px-3 py-1.5 bg-pink-50/30 font-medium text-gray-700 focus:outline-none cursor-pointer"
+              >
+                <option value="빠른 모델">빠른 모델</option>
+                <option value="빠른 모델 플러스">빠른 모델 플러스</option>
+                <option value="기본 모델 플러스">기본 모델 플러스</option>
+                <option value="생각하는 모델 플러스">생각하는 모델 플러스</option>
+              </select>
+            </div>
+
+            {/* 추론 강도 */}
             <div className="flex items-center gap-1.5">
               <span className="text-xs font-medium text-gray-400">추론 강도:</span>
-              <div className="relative inline-block">
-                <select
-                  value={reasoningEffort}
-                  onChange={(e) => setReasoningEffort(e.target.value)}
-                  className="appearance-none text-xs border border-pink-200 rounded-full pl-3 pr-7 py-1.5 bg-pink-50/30 font-medium text-gray-700 focus:outline-none focus:ring-2 focus:ring-pink-200/80 cursor-pointer hover:bg-pink-50/60 transition"
-                >
-                  <option value="low">Low (빠른 응답)</option>
-                  <option value="medium">Medium (기본 추론)</option>
-                  <option value="high">High (심층 추론)</option>
-                </select>
-                <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2.5 text-pink-400">
-                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                  </svg>
-                </div>
-              </div>
+              <select
+                value={reasoningEffort}
+                onChange={(e) => setReasoningEffort(e.target.value)}
+                className="text-xs border border-pink-200 rounded-full px-3 py-1.5 bg-pink-50/30 font-medium text-gray-700 focus:outline-none cursor-pointer"
+              >
+                <option value="low">Low (빠른 응답)</option>
+                <option value="medium">Medium (기본 추론)</option>
+                <option value="high">High (심층 추론)</option>
+              </select>
             </div>
           </div>
         </header>
 
-        {/* 📜 채팅 메시지 스크롤 영역 */}
+        {/* 📜 채팅 메시지 스크롤 영역 (너비 넓힘: max-w-5xl) */}
         <div ref={chatContainerRef} className="flex-1 overflow-y-auto">
-          <div className="max-w-3xl mx-auto px-6 pt-4 pb-12 space-y-6 min-w-0">
+          <div className="max-w-5xl mx-auto px-6 pt-4 pb-12 space-y-6 min-w-0">
             {messages.length === 0 && (
               <div className="h-[60vh] flex flex-col items-center justify-center text-gray-300 text-base">
                 <p>궁금한 점을 자유롭게 입력해 주세요!</p>
@@ -501,7 +522,7 @@ export default function Home() {
               const isGenerating = loading && i === messages.length - 1;
 
               return (
-                <div key={i} className="flex flex-col space-y-2 min-w-0">
+                <div key={m.id || i} id={`msg-${m.id}`} className="flex flex-col space-y-2 min-w-0 scroll-mt-6">
                   {m.role === 'user' ? (
                     <div className="flex justify-end">
                       <div className="bg-pink-100/80 text-pink-950 px-5 py-3 rounded-3xl max-w-[80%] text-base leading-relaxed shadow-2xs flex flex-col gap-3">
@@ -552,10 +573,13 @@ export default function Home() {
                       )}
 
                       {m.content && (
-                        <div className="text-gray-800 text-base leading-relaxed w-full prose prose-base max-w-none pl-9 min-w-0 overflow-hidden">
+                        <div className="text-gray-800 text-base leading-relaxed w-full prose prose-pink max-w-none pl-9 min-w-0 overflow-hidden">
                           <ReactMarkdown
                             remarkPlugins={[remarkGfm]}
                             components={{
+                              h1: ({ node, ...props }) => <h1 className="text-lg font-bold text-gray-800 mt-4 mb-2 border-b border-pink-100 pb-1" {...props} />,
+                              h2: ({ node, ...props }) => <h2 className="text-base font-bold text-gray-800 mt-3 mb-1.5" {...props} />,
+                              h3: ({ node, ...props }) => <h3 className="text-sm font-bold text-pink-900 mt-3 mb-1 bg-pink-50/60 px-2.5 py-1 rounded-lg border-l-4 border-pink-400 inline-block" {...props} />,
                               table: ({ node, ...props }) => (
                                 <div className="overflow-x-auto my-3 border border-pink-100 rounded-xl">
                                   <table className="min-w-full divide-y divide-pink-100 text-sm" {...props} />
@@ -587,11 +611,9 @@ export default function Home() {
           </div>
         </div>
 
-        {/* 📎 하단 입력창 + 파일 선택 영역 */}
+        {/* 📎 하단 입력창 (기존 크기 유지: max-w-3xl) */}
         <div className="p-4 bg-white shrink-0">
           <div className="max-w-3xl mx-auto flex flex-col bg-gray-50/80 rounded-3xl p-3 border border-pink-100/80 focus-within:border-pink-200 focus-within:ring-2 focus-within:ring-pink-100/50 transition shadow-2xs">
-            
-            {/* 선택된 파일 미니 뱃지 */}
             {selectedFile && (
               <div className="flex items-center gap-2 mb-2 px-3 py-1 bg-pink-100/80 border border-pink-200 text-pink-900 rounded-full text-xs w-fit">
                 <span>{selectedFile.isImage ? '🖼️' : '📄'} {selectedFile.name}</span>
@@ -661,7 +683,7 @@ export default function Home() {
         </div>
       </main>
 
-      {/* 🌸 MCP 로컬 탐색 모달 팝업 */}
+      {/* 🌸 MCP 로컬 탐색 모달 */}
       {isMcpModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/30 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white w-full max-w-md rounded-3xl shadow-xl border border-pink-100 overflow-hidden flex flex-col">
@@ -682,7 +704,7 @@ export default function Home() {
 
             <div className="p-6 flex flex-col gap-4">
               <p className="text-xs text-gray-500 leading-relaxed">
-                MCP 서버가 접근 가능한 프로젝트 범위 내의 경로(파일 또는 폴더)를 입력하면, 직접 탐색하여 요약해 줍니다.
+                MCP 서버가 접근 가능한 프로젝트 범위 내의 경로를 입력하면 직접 탐색하여 요약해 줍니다.
               </p>
 
               <div>
@@ -698,7 +720,6 @@ export default function Home() {
                 />
               </div>
 
-              {/* 자주 쓰는 예시 경로 버튼들 */}
               <div className="flex flex-wrap gap-1.5">
                 <span className="text-[11px] text-gray-400 self-center mr-1">자주 찾는 경로:</span>
                 {['package.json', 'app/page.tsx', 'public/'].map((path) => (
@@ -732,7 +753,7 @@ export default function Home() {
         </div>
       )}
 
-      {/* 🌸 모달 팝업 창 (생각 보기) */}
+      {/* 🌸 생각 모달 */}
       {activeModalReasoning && (
         <div className="fixed inset-0 z-50 bg-black/30 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white w-full max-w-2xl rounded-3xl shadow-xl border border-pink-100 overflow-hidden flex flex-col max-h-[80vh]">

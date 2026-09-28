@@ -2,7 +2,20 @@ import { NextResponse } from 'next/server';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
-// 🌐 [도구 1] 웹 페치(Web Fetch) 함수
+// 🕒 한국 시각(KST) 기준 날짜/요일 생성 함수
+function getKstDateString() {
+  const now = new Date();
+  const options: Intl.DateTimeFormatOptions = {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    weekday: 'long',
+  };
+  return new Intl.DateTimeFormat('ko-KR', options).format(now);
+}
+
+// 🌐 [도구 1] Web Fetch 함수
 async function fetchWebPage(targetUrl: string) {
   try {
     const res = await fetch(targetUrl, {
@@ -17,7 +30,6 @@ async function fetchWebPage(targetUrl: string) {
     }
 
     const html = await res.text();
-
     const cleanText = html
       .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
       .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
@@ -33,7 +45,53 @@ async function fetchWebPage(targetUrl: string) {
   }
 }
 
-// 🔌 [도구 2] Filesystem MCP 클라이언트 연동 함수
+// 🔍 [도구 2] Tavily Web Search API 연동 함수
+async function searchTavily(query: string) {
+  const apiKey = process.env.TAVILY_API_KEY || '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';
+
+  const todayKst = getKstDateString();
+  const fullQuery = `${query} (현재 한국 기준일자: ${todayKst})`;
+
+  try {
+    const res = await fetch('https://api.tavily.com/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        api_key: apiKey,
+        query: fullQuery,
+        search_depth: 'advanced',
+        include_answer: true,
+        max_results: 5,
+      }),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error('❌ Tavily API 에러 Response:', res.status, errText);
+      return JSON.stringify({ error: `Tavily 검색 실패 (Status: ${res.status})` });
+    }
+
+    const data = await res.json();
+    let resultText = '';
+
+    if (data.answer) {
+      resultText += `[Tavily 요약 답변]: ${data.answer}\n\n`;
+    }
+
+    if (data.results && data.results.length > 0) {
+      resultText += data.results
+        .map((r: any) => `[출처: ${r.title}] (${r.url})\n내용: ${r.content}`)
+        .join('\n\n');
+    }
+
+    return resultText || '검색 결과가 없습니다.';
+  } catch (err) {
+    console.error('Tavily Search 연동 예외 에러:', err);
+    return null;
+  }
+}
+
+// 🔌 [도구 3] Filesystem MCP 클라이언트 연동 함수
 async function callMcpTool(toolName: string, args: Record<string, any>) {
   let transport: StdioClientTransport | null = null;
   try {
@@ -68,7 +126,7 @@ async function callMcpTool(toolName: string, args: Record<string, any>) {
   }
 }
 
-// 📄 [도구 3] FastAPI + ChromaDB RAG 검색 함수
+// 📄 [도구 4] FastAPI + ChromaDB RAG 검색 함수
 async function fetchRagContext(userQuery: string) {
   try {
     const ragRes = await fetch('http://127.0.0.1:8000/api/search', {
@@ -93,17 +151,12 @@ async function fetchRagContext(userQuery: string) {
 
 export async function POST(req: Request) {
   try {
-    // 1. 프론트엔드 데이터 수신
-    const { message, reasoningEffort, model, useMcp } = await req.json();
+    const { message, reasoningEffort, model } = await req.json();
     const selectedModel = model || '빠른 모델 플러스';
 
     const SAMIGPT_API_URL = process.env.SAMIGPT_API_URL || 'https://gpt.samitech.kr/api/llm';
-    const SAMIGPT_API_KEY =
-      process.env.SAMIGPT_API_KEY ||
-      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjaGVjayI6ZmFsc2UsInVzZXJuYW1lIjoiZ3lmdWQ1MjE2IiwiZXhwIjo0OTQyOTQ1NzIxfQ.gGr6plsCOZkz-3FociJUsPSjH8E2SnGWPf6q0M8AY84';
-    const USER_COOKIE =
-      process.env.USER_COOKIE ||
-      '__Host-next-auth.csrf-token-gpt=db7ee97142721316dcdd2e2e3015282f29289e14f3b4dc8125cbea74a818ad91%7C27a14d937d24e3890abe56455c4206cae332e895e2b251e9d55aae63adc8be38; __Secure-next-auth.callback-url-gpt=http%3A%2F%2Flocalhost%3A3000; __Secure-next-auth.session-token-gpt=eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..QoP6GSzrpFrpIyCi.STcMukaN7-I06BZc9ZdNQNaPUruL1fi1sQHjWpedVUiUgKv-tzwarqzLMDeD3s6Sk11VFVqjNNsiSXU2XwRySKZzSm_pjKrXJZuy3yFiUCK_DPRnd4VNxi2Ytj8HRMBXsJXZOX1XbbNjUkKdmwu6K6f37xK2XUeQHYPrY9k-4Tj7ACIaHUdBHrjI2dXRTnHi2dOecm_WL5WdaUh0VJkOiE4g4CZDbNad_WXNaIL_-LDMu9BY8Vw1kzkHncXpSyYG6JDz5XIC-RnklKl0fe-ATDFuEs3BiwSqllq9AsuDNenDAaieep39tO6wdxUFDP6KdT57uxX3-jsYE23cjyHsvZ4d_PYvVkgJlJdqbS--I2_MUwpTLTnDm9UxtGzpLAmpi-8jn5cEZKiTLL7RHphVjPG32mTP7nIxIprD2ujcRGvd5jfBewSkaPsN8tBTEXZXnM6G8aFzz1X-n28gPoQzK1ymrP0bX81KablBvqy0CY9jlcq5q_6Vqy1SeP7mw50Qji76abBaIXaZTve98okvU8XlrCG4tnmE1dxOMxRJPT8r8evlBY0j5BNbiDXQzNGjUJ17wayTaVhmczYON9p6dFTO0bHiXrG7DUXvT3LzgwDHnnZe4uD8_shdl83QyDlFuT50rhB5AnjVwUEnscf8NJjtFEsqAibpUiaOmZPYdag5ubRVnS_eXWfYWA9IsiHbPnS5ntbYcw_sPKHc3o0hjU_RZHbWoZVBM_d0OeTvsBTgRUiyZPNBUnPlsDsrTKAbY4k_NTApwd9ZXF3ACtW7njaSah32qzzxPA3G5p3ywbRkyNofwrodLArdg3yj6X9BWNM.2j3992k0toJ6Nhrcts5xXQ';
+    const SAMIGPT_API_KEY = process.env.SAMIGPT_API_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjaGVjayI6ZmFsc2UsInVzZXJuYW1lIjoiZ3lmdWQ1MjE2IiwiZXhwIjo0OTQyOTQ1NzIxfQ.gGr6plsCOZkz-3FociJUsPSjH8E2SnGWPf6q0M8AY84';
+    const USER_COOKIE = process.env.USER_COOKIE || '__Host-next-auth.csrf-token-gpt=db7ee97142721316dcdd2e2e3015282f29289e14f3b4dc8125cbea74a818ad91%7C27a14d937d24e3890abe56455c4206cae332e895e2b251e9d55aae63adc8be38; __Secure-next-auth.callback-url-gpt=http%3A%2F%2Flocalhost%3A3000; __Secure-next-auth.session-token-gpt=eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..QoP6GSzrpFrpIyCi.STcMukaN7-I06BZc9ZdNQNaPUruL1fi1sQHjWpedVUiUgKv-tzwarqzLMDeD3s6Sk11VFVqjNNsiSXU2XwRySKZzSm_pjKrXJZuy3yFiUCK_DPRnd4VNxi2Ytj8HRMBXsJXZOX1XbbNjUkKdmwu6K6f37xK2XUeQHYPrY9k-4Tj7ACIaHUdBHrjI2dXRTnHi2dOecm_WL5WdaUh0VJkOiE4g4CZDbNad_WXNaIL_-LDMu9BY8Vw1kzkHncXpSyYG6JDz5XIC-RnklKl0fe-ATDFuEs3BiwSqllq9AsuDNenDAaieep39tO6wdxUFDP6KdT57uxX3-jsYE23cjyHsvZ4d_PYvVkgJlJdqbS--I2_MUwpTLTnDm9UxtGzpLAmpi-8jn5cEZKiTLL7RHphVjPG32mTP7nIxIprD2ujcRGvd5jfBewSkaPsN8tBTEXZXnM6G8aFzz1X-n28gPoQzK1ymrP0bX81KablBvqy0CY9jlcq5q_6Vqy1SeP7mw50Qji76abBaIXaZTve98okvU8XlrCG4tnmE1dxOMxRJPT8r8evlBY0j5BNbiDXQzNGjUJ17wayTaVhmczYON9p6dFTO0bHiXrG7DUXvT3LzgwDHnnZe4uD8_shdl83QyDlFuT50rhB5AnjVwUEnscf8NJjtFEsqAibpUiaOmZPYdag5ubRVnS_eXWfYWA9IsiHbPnS5ntbYcw_sPKHc3o0hjU_RZHbWoZVBM_d0OeTvsBTgRUiyZPNBUnPlsDsrTKAbY4k_NTApwd9ZXF3ACtW7njaSah32qzzxPA3G5p3ywbRkyNofwrodLArdg3yj6X9BWNM.2j3992k0toJ6Nhrcts5xXQ';
 
     const requestHeaders = {
       Accept: 'text/event-stream, application/json, */*',
@@ -115,47 +168,26 @@ export async function POST(req: Request) {
       'X-Organization-Code': 'sami',
     };
 
-    // 2. [RAG 검색 병렬 실행] ChromaDB 검색
+    // RAG 검색 병렬 실행
     const ragContextPromise = fetchRagContext(message);
 
-    // 3. 도구(MCP / Tool Calling) 필요 여부 판단 systemPrompt
-    const systemPrompt = useMcp
-      ? `
-너는 오직 JSON만 출력하는 도구 판단 시스템이다. 절대로 질문에 대한 답변이나 안내 문구를 작성하지 마라.
+    // 도구 판단 시스템 프롬프트 (JSON 엄격 지정)
+    const systemPrompt = `You are a tool selection classifier that outputs ONLY raw JSON without any markdown formatting or extra text.
 
-사용 가능한 도구:
-- fetch_web_page(url: string): 웹페이지의 URL을 읽어서 텍스트 데이터를 반환함
-- list_directory(path: string): 지정된 디렉토리 내 파일 및 폴더 목록을 조회함 (기본값: ".")
-- read_file(path: string): 지정된 파일의 내용을 읽어옴
+Available Tools:
+- fetch_web_page(url: string)
+- tavily_search(query: string)
+- list_directory(path: string)
+- read_file(path: string)
 
-규칙:
-1. 사용자의 질문에 실제 웹 URL(http:// 또는 https://)이 포함되어 있으면:
-{"tool": "fetch_web_page", "url": "추출한URL"}
+Rules:
+1. If the user query has a URL (http/https): {"tool": "fetch_web_page", "url": "URL"}
+2. If the user query asks for real-time info, weather, news, or web search: {"tool": "tavily_search", "query": "search query"}
+3. If listing local directory: {"tool": "list_directory", "path": "."}
+4. If reading local file: {"tool": "read_file", "path": "path/file"}
+5. Otherwise: NONE`;
 
-2. 파일 목록 조회/폴더 확인 요청이면:
-{"tool": "list_directory", "path": "."}
-
-3. 특정 파일 내용 읽기 요청이면:
-{"tool": "read_file", "path": "상대경로/파일명"}
-
-4. 그 외 일반 질문은 무조건 단 한 단어만 출력해:
-NONE
-`
-      : `
-너는 오직 JSON만 출력하는 도구 판단 시스템이다. 절대로 질문에 대한 답변이나 안내 문구를 작성하지 마라.
-
-사용 가능한 도구:
-- fetch_web_page(url: string): 웹페이지의 URL을 읽어서 텍스트 데이터를 반환함
-
-규칙:
-1. 사용자의 질문에 실제 웹 URL(http:// 또는 https://)이 포함되어 있을 때만 pure JSON으로 응답해:
-{"tool": "fetch_web_page", "url": "추출한URL"}
-
-2. 위 조건에 해당하지 않거나 파일/MCP 관련 질문이라도 URL이 없으면 무조건 단 한 단어만 출력해:
-NONE
-`;
-
-    // 4. 도구 판단 에이전트 요청
+    // 1차 도구 판단 (reasoning_effort를 끄고 순수 JSON만 유도)
     const checkResponse = await fetch(SAMIGPT_API_URL, {
       method: 'POST',
       headers: requestHeaders,
@@ -165,7 +197,6 @@ NONE
           { role: 'system', content: systemPrompt },
           { role: 'user', content: message },
         ],
-        reasoning_effort: reasoningEffort || 'medium',
         temperature: 0,
         stream: false,
         org_code: 'sami',
@@ -181,17 +212,22 @@ NONE
       console.log('🤖 도구 판단 에이전트 응답:', resultText);
 
       try {
-        if (resultText.includes('{')) {
-          const parsed = JSON.parse(resultText);
+        const jsonMatch = resultText.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]);
 
           if (parsed.tool === 'fetch_web_page' && parsed.url) {
             console.log('🌐 [Tool Calling] 웹 페치 진행 중... URL:', parsed.url);
             externalData = await fetchWebPage(parsed.url);
-          } else if (parsed.tool === 'list_directory' && useMcp) {
+          } else if (parsed.tool === 'tavily_search' && parsed.query) {
+            console.log('🔍 [Tavily MCP/Tool] 실시간 웹 검색 진행 중... Query:', parsed.query);
+            const tavilyRes = await searchTavily(parsed.query);
+            if (tavilyRes) externalData = tavilyRes;
+          } else if (parsed.tool === 'list_directory') {
             console.log('📁 [MCP] 디렉토리 목록 조회 중...');
             const mcpRes = await callMcpTool('list_directory', { path: parsed.path || '.' });
             if (mcpRes) externalData = mcpRes;
-          } else if (parsed.tool === 'read_file' && useMcp) {
+          } else if (parsed.tool === 'read_file') {
             console.log('📄 [MCP] 파일 읽는 중... File:', parsed.path);
             const mcpRes = await callMcpTool('read_file', { path: parsed.path });
             if (mcpRes) externalData = mcpRes;
@@ -202,14 +238,31 @@ NONE
       }
     }
 
-    // RAG 문맥 수집 완료 기다림
     const ragContext = await ragContextPromise;
+    const todayKst = getKstDateString();
 
-    // 5. RAG 문맥 + 도구 결과 데이터를 결합해 최종 대화 메시지 작성
     const finalMessages = [
       {
         role: 'system',
-        content: `너는 친절하고 똑똑한 AI 비서이다. 제공된 참고 문서(사미텍 회사소개서) 및 외부 수집 데이터(MCP/웹데이터)가 있다면 이를 바탕으로 자연스럽고 명확하게 답변해라. 관련 정보가 부족하면 일반적인 유용한 답변을 작성해라.`,
+        content: `너는 실시간 정보 조회가 가능하며 친절하고 똑똑한 AI 비서이다.
+
+[현재 기준 시각]:
+현재 한국 표준시(KST) 기준 시각은 **${todayKst}** 이다.
+오늘 날짜, 내일 날짜, 요일 관련 질문에 대답할 때 반드시 이 날짜를 절대적 기준으로 삼아라. 외부 데이터에 해외 시차(UTC 등)로 인해 날짜가 다르게 적혀 있더라도 무조건 현재 한국 시각 기준(${todayKst})이 정답이다.
+
+[필수 지침]:
+아래에 [수집된 외부 데이터]가 전달된 경우, "사이트를 직접 확인하라"는 식의 대답을 절대로 하지 말고, **제공된 외부 데이터 안의 실제 기온, 날씨, 숫자, 뉴스 내용**을 반드시 직접 인용하여 상세하게 작성해라.
+전체 답변의 길이는 가독성과 빠른 응답을 위해 공백 포함 2,000자 이내로 간결하게 작성해라.
+
+[답변 출력 구조]:
+### 1. 상세 설명
+- 외부 데이터 기반의 실제 상세 내용(온도, 날씨 상태, 뉴스 등)을 친절하게 설명한다.
+
+### 2. 핵심 요약
+- 핵심 데이터를 마크다운 표(| 항목 | 내용 |) 형식으로 정리한다.
+
+### 3. 결론
+- 전체 내용을 2~3줄로 깔끔하게 요약 정리한다.`,
       },
     ];
 
@@ -223,13 +276,12 @@ NONE
     if (externalData) {
       finalMessages.push({
         role: 'system',
-        content: `[수집된 외부 데이터 (MCP/웹페치)]:\n${externalData}`,
+        content: `[수집된 외부 데이터 (웹검색/MCP)]:\n${externalData}`,
       });
     }
 
     finalMessages.push({ role: 'user', content: message });
 
-    // 6. SAMI-GPT API로 최종 스트리밍 응답 요청
     const streamResponse = await fetch(SAMIGPT_API_URL, {
       method: 'POST',
       headers: requestHeaders,
@@ -237,24 +289,15 @@ NONE
         model: selectedModel,
         messages: finalMessages,
         reasoning_effort: reasoningEffort || 'medium',
-        temperature: 0.7,
+        temperature: 0.2,
         stream: true,
         org_code: 'sami',
         organization: 'sami',
       }),
     });
 
-    if (!streamResponse.ok) {
-      const errorText = await streamResponse.text();
-      console.error('사미GPT 응답 에러:', streamResponse.status, errorText);
-      return NextResponse.json(
-        { error: `사미GPT API 오류 (${streamResponse.status})` },
-        { status: streamResponse.status }
-      );
-    }
-
-    if (!streamResponse.body) {
-      return NextResponse.json({ error: 'No response body' }, { status: 500 });
+    if (!streamResponse.ok || !streamResponse.body) {
+      return NextResponse.json({ error: '사미GPT API 오류' }, { status: streamResponse.status });
     }
 
     return createSSEStreamResponse(streamResponse.body);
@@ -281,18 +324,6 @@ function createSSEStreamResponse(body: ReadableStream<Uint8Array>) {
 
           try {
             const parsed = JSON.parse(dataStr);
-
-            if (parsed.error) {
-              controller.enqueue(
-                encoder.encode(
-                  JSON.stringify({
-                    content: `[오류: ${parsed.error.message || 'API 오류'}]`,
-                  }) + '\n'
-                )
-              );
-              continue;
-            }
-
             const delta = parsed.choices?.[0]?.delta;
 
             if (delta) {

@@ -6,7 +6,6 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 
 app = FastAPI()
 
-# Next.js 프론트엔드 통신 허용 (CORS 설정)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -15,7 +14,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ChromaDB 및 임베딩 로드
 embeddings = HuggingFaceEmbeddings(model_name="jhgan/ko-sroberta-multitask")
 vectorstore = Chroma(persist_directory="./chroma_db", embedding_function=embeddings)
 
@@ -24,14 +22,15 @@ class QueryRequest(BaseModel):
 
 @app.post("/api/search")
 async def search_rag(request: QueryRequest):
-    # 질문과 관련된 상위 3개 문맥 검색
+    # 유사도 기반 상위 3개 검색
     results = vectorstore.similarity_search(request.query, k=3)
     
     docs = []
     for doc in results:
         docs.append({
             "content": doc.page_content,
-            "page": doc.metadata.get("page", 0) + 1
+            "page": doc.metadata.get("page", 0) + 1,
+            "source": doc.metadata.get("source_file", "문서")
         })
         
     return {"results": docs}

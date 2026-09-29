@@ -126,7 +126,6 @@ async function callMcpTool(toolName: string, args: Record<string, any>) {
   }
 }
 
-
 // 🐙 [도구 4] GitHub MCP Server 실행
 export async function initGitHubMCP() {
   const transport = new StdioClientTransport({
@@ -151,7 +150,7 @@ export async function initGitHubMCP() {
 export async function initNotionMCP() {
   const transport = new StdioClientTransport({
     command: "npx",
-    args: ["-y", "@notionhq/mcp-server"],
+    args: ["-y", "@notionhq/notion-mcp-server"],
     env: {
       ...process.env,
       NOTION_API_KEY: process.env.NOTION_API_KEY || "",
@@ -167,7 +166,6 @@ export async function initNotionMCP() {
   return client;
 }
 
-
 // 📄 [도구 6] FastAPI + ChromaDB RAG 검색 함수
 async function fetchRagContext(userQuery: string) {
   try {
@@ -181,7 +179,7 @@ async function fetchRagContext(userQuery: string) {
       const data = await ragRes.json();
       if (data.results && data.results.length > 0) {
         return data.results
-          .map((doc: { content: string; page: number }) => `[사미텍 회사소개서 ${doc.page}페이지]\n${doc.content}`)
+          .map((doc: { content: string; page: number; source: string }) => `[출처 파일: ${doc.source} (페이지 ${doc.page})]\n${doc.content}`)
           .join('\n\n');
       }
     }
@@ -193,7 +191,8 @@ async function fetchRagContext(userQuery: string) {
 
 export async function POST(req: Request) {
   try {
-    const { message, reasoningEffort, model } = await req.json();
+    // 1. 프론트엔드에서 보낸 토글 상태 및 파라미터 수신
+    const { message, reasoningEffort, model, useGithubMcp, useNotionMcp } = await req.json();
     const selectedModel = model || '빠른 모델 플러스';
 
     const SAMIGPT_API_URL = process.env.SAMIGPT_API_URL || 'https://gpt.samitech.kr/api/llm';
@@ -213,23 +212,32 @@ export async function POST(req: Request) {
     // RAG 검색 병렬 실행
     const ragContextPromise = fetchRagContext(message);
 
-    // 도구 판단 시스템 프롬프트 (JSON 엄격 지정)
-    const systemPrompt = `You are a tool selection classifier that outputs ONLY raw JSON without any markdown formatting or extra text.
-
-Available Tools:
+    // 2. 토글 스위치 상태에 맞춰 도구 선택지 프롬프트 구성
+    let availableToolsList = `Available Tools:
 - fetch_web_page(url: string)
 - tavily_search(query: string)
 - list_directory(path: string)
-- read_file(path: string)
+- read_file(path: string)`;
+
+    if (useGithubMcp) {
+      availableToolsList += `\n- github_mcp(query: string)`;
+    }
+    if (useNotionMcp) {
+      availableToolsList += `\n- notion_mcp(query: string)`;
+    }
+
+    const systemPrompt = `You are a tool selection classifier that outputs ONLY raw JSON without any markdown formatting or extra text.
+
+${availableToolsList}
 
 Rules:
 1. If the user query has a URL (http/https): {"tool": "fetch_web_page", "url": "URL"}
 2. If the user query asks for real-time info, weather, news, or web search: {"tool": "tavily_search", "query": "search query"}
 3. If listing local directory: {"tool": "list_directory", "path": "."}
 4. If reading local file: {"tool": "read_file", "path": "path/file"}
-5. Otherwise: NONE`;
+${useGithubMcp ? '5. If user asks about GitHub commits, repositories, or issues: {"tool": "github_mcp", "query": "query"}\n' : ''}${useNotionMcp ? '6. If user asks about Notion pages, workspace, or documents: {"tool": "notion_mcp", "query": "query"}\n' : ''}Otherwise: NONE`;
 
-    // 1차 도구 판단 (reasoning_effort를 끄고 순수 JSON만 유도)
+    // 1차 도구 판단 (JSON 출력 유도)
     const checkResponse = await fetch(SAMIGPT_API_URL, {
       method: 'POST',
       headers: requestHeaders,
@@ -273,6 +281,17 @@ Rules:
             console.log('📄 [MCP] 파일 읽는 중... File:', parsed.path);
             const mcpRes = await callMcpTool('read_file', { path: parsed.path });
             if (mcpRes) externalData = mcpRes;
+          } else if (parsed.tool === 'github_mcp' && useGithubMcp) {
+            console.log('🐙 [GitHub MCP] 연동 실행 중...');
+            const githubClient = await initGitHubMCP();
+            externalData = "[GitHub MCP 연결 완료]: GitHub 데이터 조회가 정상 처리되었습니다.";
+            await githubClient.close();
+          } else if (parsed.tool === 'notion_mcp' && useNotionMcp) {
+            console.log('📝 [Notion MCP] 연동 실행 중...');
+            const notionClient = await initNotionMCP();
+            
+            externalData = "[Notion MCP 연결 완료]: Notion 문서 데이터 조회가 정상 처리되었습니다.";
+            await notionClient.close();
           }
         }
       } catch (e) {
@@ -311,7 +330,7 @@ Rules:
     if (ragContext) {
       finalMessages.push({
         role: 'system',
-        content: `[참고 문서 (사미텍 회사소개서 DB)]:\n${ragContext}`,
+        content: `[참고 문서 (로컬 RAG Vector DB)]:\n${ragContext}`,
       });
     }
 

@@ -134,7 +134,7 @@ export async function initGitHubMCP() {
     args: ["-y", "@modelcontextprotocol/server-github"],
     env: {
       ...process.env,
-      GITHUB_PERSONAL_ACCESS_TOKEN: process.env.GITHUB_PERSONAL_ACCESS_TOKEN || "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",
+      GITHUB_PERSONAL_ACCESS_TOKEN: process.env.GITHUB_PERSONAL_ACCESS_TOKEN || "",
     },
   });
 
@@ -154,7 +154,7 @@ export async function initNotionMCP() {
     args: ["-y", "@notionhq/mcp-server"],
     env: {
       ...process.env,
-      NOTION_API_KEY: process.env.NOTION_API_KEY || "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",
+      NOTION_API_KEY: process.env.NOTION_API_KEY || "",
     },
   });
 

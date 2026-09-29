@@ -126,7 +126,49 @@ async function callMcpTool(toolName: string, args: Record<string, any>) {
   }
 }
 
-// 📄 [도구 4] FastAPI + ChromaDB RAG 검색 함수
+
+// 🐙 [도구 4] GitHub MCP Server 실행
+export async function initGitHubMCP() {
+  const transport = new StdioClientTransport({
+    command: "npx",
+    args: ["-y", "@modelcontextprotocol/server-github"],
+    env: {
+      ...process.env,
+      GITHUB_PERSONAL_ACCESS_TOKEN: process.env.GITHUB_PERSONAL_ACCESS_TOKEN || "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",
+    },
+  });
+
+  const client = new Client(
+    { name: "SamiGPT-GitHub", version: "1.0.0" },
+    { capabilities: {} }
+  );
+
+  await client.connect(transport);
+  return client;
+}
+
+// 📝 [도구 5] Notion MCP Server 실행
+export async function initNotionMCP() {
+  const transport = new StdioClientTransport({
+    command: "npx",
+    args: ["-y", "@notionhq/mcp-server"],
+    env: {
+      ...process.env,
+      NOTION_API_KEY: process.env.NOTION_API_KEY || "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",
+    },
+  });
+
+  const client = new Client(
+    { name: "SamiGPT-Notion", version: "1.0.0" },
+    { capabilities: {} }
+  );
+
+  await client.connect(transport);
+  return client;
+}
+
+
+// 📄 [도구 6] FastAPI + ChromaDB RAG 검색 함수
 async function fetchRagContext(userQuery: string) {
   try {
     const ragRes = await fetch('http://127.0.0.1:8000/api/search', {

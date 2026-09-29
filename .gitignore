@@ -44,3 +44,4 @@ next-env.d.ts
 *.pdf
 chroma_db/
 .chroma/
+*.sqlite3

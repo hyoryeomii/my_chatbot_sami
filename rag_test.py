@@ -7,7 +7,7 @@ from langchain_community.vectorstores import Chroma
 # 1. 대상 PDF 파일 목록 정리
 pdf_paths = [
     "(주)사미텍_회사소개서.pdf",
-    "23.2. 재난현장 표준작전절차(SOP) 안내_1_'23.2. 재난현장 표준작전절차(SOP).pdf",  # 👈 쉼표(,) 추가
+    "23.2. 재난현장 표준작전절차(SOP) 안내_1_'23.2. 재난현장 표준작전절차(SOP).pdf",  
     "02.+IT기술교육_IT기술교육체계수립.pdf"
     # 추가할 PDF 파일 경로를 리스트에 넣으시면 됩니다.
 ]

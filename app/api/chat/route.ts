@@ -45,9 +45,82 @@ async function fetchWebPage(targetUrl: string) {
   }
 }
 
-// 🔍 [도구 2] Tavily Web Search API 연동 함수
+
+// ==========================================================================
+// route.ts 에서 기존 "🔍 [도구 2] Tavily Web Search API 연동 함수" 전체를
+// 아래 코드 전체로 교체하세요. (import 추가 필요 없음: Client, StdioClientTransport 이미 있음)
+// ==========================================================================
+
+// 🔍 [도구 2] Tavily Web Search - 공식 MCP 서버(tavily-mcp) 연동
 async function searchTavily(query: string) {
-  const apiKey = process.env.TAVILY_API_KEY || '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';
+  const todayKst = getKstDateString();
+  const fullQuery = `${query} (현재 한국 기준일자: ${todayKst})`;
+
+  let transport: StdioClientTransport | null = null;
+  try {
+    // 1. Tavily 공식 MCP 서버를 로컬에서 실행 (표준 입출력 stdio 통신)
+    transport = new StdioClientTransport({
+      command: 'npx',
+      args: ['-y', 'tavily-mcp@latest'],
+      env: {
+        ...(process.env as Record<string, string>),
+        TAVILY_API_KEY: process.env.TAVILY_API_KEY || 'fvM26YtPhNowefkRhuZCGuJgbk72PnuGMfEYgcke0d',
+      },
+    });
+
+    // 2. MCP 클라이언트 생성 및 연결
+    const client = new Client(
+      { name: 'samigpt-tavily-client', version: '1.0.0' },
+      { capabilities: {} }
+    );
+    await client.connect(transport);
+
+    // 3. 서버가 제공하는 도구 목록에서 검색 도구 찾기
+    //    (버전에 따라 이름이 tavily-search 또는 tavily_search)
+    const { tools } = await client.listTools();
+    const searchTool = tools.find((t) => t.name.includes('search'));
+    if (!searchTool) {
+      throw new Error('검색 도구 없음. 제공 도구: ' + tools.map((t) => t.name).join(', '));
+    }
+    console.log(`🔌 Tavily MCP 연결 성공! [도구: ${searchTool.name}]`);
+
+    // 4. MCP 프로토콜(JSON-RPC)로 검색 도구 호출
+    const result = await client.callTool({
+      name: searchTool.name,
+      arguments: {
+        query: fullQuery,
+        search_depth: 'advanced',
+        max_results: 5,
+      },
+    });
+    await client.close();
+
+    // 5. MCP 표준 응답(content 배열)에서 텍스트만 추출
+    const text = ((result.content as any[]) || [])
+      .filter((c) => c.type === 'text')
+      .map((c) => c.text)
+      .join('\n\n');
+
+
+    console.log('📦 Tavily MCP 응답(앞부분):', text.slice(0, 300));
+
+    if (result.isError || /^(error|tavily api error)/i.test(text.trim())) {
+      throw new Error('Tavily MCP 도구 에러 응답: ' + text.slice(0, 200));
+    }
+
+    return text || '검색 결과가 없습니다.';
+  } catch (err) {
+    console.error('Tavily MCP 연동 에러 → REST API 백업으로 전환:', err);
+    if (transport) {
+      try { await transport.close(); } catch (_) {}
+    }
+    return await searchTavilyRest(query);   // MCP 실패 시 기존 방식으로 백업
+  }
+}
+
+// 🔁 [백업] 기존 Tavily REST API 방식 (MCP 실패 시에만 사용)
+async function searchTavilyRest(query: string) {
+  const apiKey = process.env.TAVILY_API_KEY || 'fvM26YtPhNowefkRhuZCGuJgbk72PnuGMfEYgcke0d';
 
   const todayKst = getKstDateString();
   const fullQuery = `${query} (현재 한국 기준일자: ${todayKst})`;
@@ -90,6 +163,54 @@ async function searchTavily(query: string) {
     return null;
   }
 }
+
+
+
+// 🔍 [도구 2] Tavily Web Search API 연동 함수
+/*async function searchTavily(query: string) {
+  const apiKey = process.env.TAVILY_API_KEY || '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';
+
+  const todayKst = getKstDateString();
+  const fullQuery = `${query} (현재 한국 기준일자: ${todayKst})`;
+
+  try {
+    const res = await fetch('https://api.tavily.com/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        api_key: apiKey,
+        query: fullQuery,
+        search_depth: 'advanced',
+        include_answer: true,
+        max_results: 5,
+      }),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error('❌ Tavily API 에러 Response:', res.status, errText);
+      return JSON.stringify({ error: `Tavily 검색 실패 (Status: ${res.status})` });
+    }
+
+    const data = await res.json();
+    let resultText = '';
+
+    if (data.answer) {
+      resultText += `[Tavily 요약 답변]: ${data.answer}\n\n`;
+    }
+
+    if (data.results && data.results.length > 0) {
+      resultText += data.results
+        .map((r: any) => `[출처: ${r.title}] (${r.url})\n내용: ${r.content}`)
+        .join('\n\n');
+    }
+
+    return resultText || '검색 결과가 없습니다.';
+  } catch (err) {
+    console.error('Tavily Search 연동 예외 에러:', err);
+    return null;
+  }
+}*/
 
 // 🔌 [도구 3] Filesystem MCP 클라이언트 연동 함수
 async function callMcpTool(toolName: string, args: Record<string, any>) {

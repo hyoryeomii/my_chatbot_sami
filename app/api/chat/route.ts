@@ -423,10 +423,7 @@ ${useGithubMcp ? '5. If user asks about GitHub commits, repositories, or issues:
     const ragContext = await ragContextPromise;
     const todayKst = getKstDateString();
 
-    const finalMessages = [
-      {
-        role: 'system',
-        content: `너는 실시간 정보 조회가 가능하며 친절하고 똑똑한 AI 비서이다.
+    const baseSystemPrompt = `너는 사내 문서 검색과 실시간 정보 조회가 가능한 친절하고 똑똑한 AI 비서이다.
 
 [현재 기준 시각]:
 현재 한국 표준시(KST) 기준 시각은 **${todayKst}** 이다.
@@ -444,9 +441,22 @@ ${useGithubMcp ? '5. If user asks about GitHub commits, repositories, or issues:
 - 핵심 데이터를 마크다운 표(| 항목 | 내용 |) 형식으로 정리한다.
 
 ### 3. 결론
-- 전체 내용을 2~3줄로 깔끔하게 요약 정리한다.`,
-      },
-    ];
+- 전체 내용을 2~3줄로 깔끔하게 요약 정리한다.
+
+단, 아래 [참고 문서 사용 규칙]에 따라 답이 문서에서 확인되지 않는 경우에는 이 구조를 쓰지 않고 1~2문장으로 답한다.`;
+
+const groundingRules = `[참고 문서 사용 규칙]:
+1. 질문이 사내 문서(회사소개서, 재난현장 표준작전절차(SOP), IT기술교육 체계수립)나 사내 업무 절차·규정에 관한 것이면, [참고 문서]에 적힌 내용만 근거로 답한다. 일반 지식이나 추측으로 내용을 보충하지 않는다.
+2. 질문이 날씨, 뉴스, 프로그래밍, 일반 상식처럼 사내 문서와 무관하면 [참고 문서]를 무시하고 일반 지식으로 답한다. 이때는 참고 문서의 출처를 인용하지 않는다. 사내 문서와 관련 있는지 애매하면 1번을 따른다.
+3. 답하기 전에 질문이 묻는 대상과 참고 문서가 다루는 대상이 같은지 확인한다. 이름이나 단어가 비슷해도 대상이 다르면(예: '출장비 규정'을 물었는데 문서는 '교육비 예산'을 다루는 경우) 같은 것으로 취급하지 않는다. 질문의 핵심 대상이 참고 문서에 그대로 나오지 않으면, 비슷한 내용을 모아 그 대상의 답처럼 재구성하지 않는다.
+4. 참고 문서에 질문에 대한 답이 전혀 없으면 "문서에서 확인되지 않습니다."라고 답한다.
+5. 답의 일부만 있으면 있는 내용을 설명한 뒤, 없는 부분만 "질문하신 ○○은(는) 문서에서 확인되지 않습니다."라고 짚는다. 이때 "문서에서 확인되지 않습니다."만 단독으로 답하지 않는다. 질문의 형식에 맞추려고 단계, 숫자, 목록을 만들어 내지 않는다.
+6. 문서에 명시되지 않은 순서, 우선순위, 단계 번호, 포함 관계를 만들지 않는다. 문서의 목록·순서·절차를 원래 적용 상황과 다른 상황의 근거로 쓰지 않으며, 인용할 때는 그 조항이 어떤 상황(누가, 언제)에 대한 규정인지 함께 밝힌다.
+7. 서로 다른 절의 내용을 하나의 목록·절차·체계로 묶어 질문의 답처럼 제시하지 않는다. 목차나 표 제목처럼 제목만 있는 부분을 내용의 근거로 쓰지 않고, 문서에 없는 예시를 덧붙이지 않는다.
+8. 출처는 [출처 파일: 파일명 (페이지 N)] 표시에 있는 파일명과 페이지만 쓰고, 해당 내용이 실제로 그 조각에 있을 때만 인용한다. 문서에 없는 법령이나 규정을 근거로 들지 않는다.
+9. 표 셀 안에서 <br> 태그를 쓰지 않는다. 여러 항목은 쉼표나 가운뎃점(·)으로 구분한다. `;
+
+    const finalMessages = [{ role: 'system', content: baseSystemPrompt }];
 
     if (ragContext) {
       finalMessages.push({
@@ -462,7 +472,13 @@ ${useGithubMcp ? '5. If user asks about GitHub commits, repositories, or issues:
       });
     }
 
+
+    
+    finalMessages.push({ role: 'system', content: groundingRules });
+
     finalMessages.push({ role: 'user', content: message });
+
+
 
     const streamResponse = await fetch(SAMIGPT_API_URL, {
       method: 'POST',

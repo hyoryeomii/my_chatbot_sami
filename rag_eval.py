@@ -15,10 +15,10 @@ import pandas as pd
 API_URL      = "http://localhost:3000/api/chat"  # Next.js 답변 생성 엔드포인트 (app/api/chat/route.ts)
 API_Q_KEY    = "message"                         # route.ts가 받는 질문 필드명
 WORKERS      = 4                                 # 동시에 보낼 질문 수 (API 에러 나면 1~2로 줄이기)
-CHROMA_DIR   = r"C:\Users\samitech2025\Downloads\my_samigpt\chroma_db"                   # ChromaDB persist_directory
+CHROMA_DIR   = r"C:\Users\samitech2025\Downloads\my_samigpt\chroma_db_B_300"                   # ChromaDB persist_directory
 COLLECTION   = "langchain"                     # 컬렉션 이름 (기본값이면 langchain)
 EMBED_MODEL  = "jhgan/ko-sroberta-multitask"
-TOP_K        = 3
+TOP_K        = 5
 KW_PASS      = 0.5                             # 키워드 포함률 기준 (50% 이상이면 통과)
 
 # 답변에 이런 표현이 있으면 '문서에 없다'고 정직하게 답한 것으로 봄
@@ -285,7 +285,7 @@ def main():
                          "답변 PASS율(정답있음/전제오류)": f'{d["자동 판정"].str.startswith("PASS").mean():.0%}'})
     sm = pd.DataFrame(summ)
 
-    out = "rag_eval_result.xlsx"
+    out = "실험C_300자_k5_도구off.xlsx"
     with pd.ExcelWriter(out, engine="openpyxl") as w:
         df.to_excel(w, sheet_name="질문별 결과", index=False)
         sm.to_excel(w, sheet_name="요약 지표", index=False)

@@ -333,21 +333,29 @@ export async function POST(req: Request) {
     // RAG 검색 병렬 실행
     const ragContextPromise = fetchRagContext(message);
 
-    // 2. 토글 스위치 상태에 맞춰 도구 선택지 프롬프트 구성
-    let availableToolsList = `Available Tools:
+    // true: RAG 평가 모드(외부 도구 OFF)
+    // false: 일반 사용 모드(외부 도구 ON)
+    const ragEvalOnly = true;
+    let externalData = '';
+
+    if (ragEvalOnly) {
+      console.log('[RAG 평가 모드] 외부 도구 실행 생략');
+    } else {
+      // 2. 토글 스위치 상태에 맞춰 도구 선택지 프롬프트 구성
+      let availableToolsList = `Available Tools:
 - fetch_web_page(url: string)
 - tavily_search(query: string)
 - list_directory(path: string)
 - read_file(path: string)`;
 
-    if (useGithubMcp) {
-      availableToolsList += `\n- github_mcp(query: string)`;
-    }
-    if (useNotionMcp) {
-      availableToolsList += `\n- notion_mcp(query: string)`;
-    }
+      if (useGithubMcp) {
+        availableToolsList += `\n- github_mcp(query: string)`;
+      }
+      if (useNotionMcp) {
+        availableToolsList += `\n- notion_mcp(query: string)`;
+      }
 
-    const systemPrompt = `You are a tool selection classifier that outputs ONLY raw JSON without any markdown formatting or extra text.
+      const systemPrompt = `You are a tool selection classifier that outputs ONLY raw JSON without any markdown formatting or extra text.
 
 ${availableToolsList}
 
@@ -358,65 +366,79 @@ Rules:
 4. If reading local file: {"tool": "read_file", "path": "path/file"}
 ${useGithubMcp ? '5. If user asks about GitHub commits, repositories, or issues: {"tool": "github_mcp", "query": "query"}\n' : ''}${useNotionMcp ? '6. If user asks about Notion pages, workspace, or documents: {"tool": "notion_mcp", "query": "query"}\n' : ''}Otherwise: NONE`;
 
-    // 1차 도구 판단 (JSON 출력 유도)
-    const checkResponse = await fetch(SAMIGPT_API_URL, {
-      method: 'POST',
-      headers: requestHeaders,
-      body: JSON.stringify({
-        model: selectedModel,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: message },
-        ],
-        temperature: 0,
-        stream: false,
-        org_code: 'sami',
-        organization: 'sami',
-      }),
-    });
+      // 1차 도구 판단 (JSON 출력 유도)
+      const checkResponse = await fetch(SAMIGPT_API_URL, {
+        method: 'POST',
+        headers: requestHeaders,
+        body: JSON.stringify({
+          model: selectedModel,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: message },
+          ],
+          temperature: 0,
+          stream: false,
+          org_code: 'sami',
+          organization: 'sami',
+        }),
+      });
 
-    let externalData = '';
-    if (checkResponse.ok) {
-      const checkData = await checkResponse.json();
-      const resultText = checkData.choices?.[0]?.message?.content?.trim() || '';
+      if (checkResponse.ok) {
+        const checkData = await checkResponse.json();
+        const resultText =
+          checkData.choices?.[0]?.message?.content?.trim() || '';
 
-      console.log('🤖 도구 판단 에이전트 응답:', resultText);
+        console.log('🤖 도구 판단 에이전트 응답:', resultText);
 
-      try {
-        const jsonMatch = resultText.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          const parsed = JSON.parse(jsonMatch[0]);
+        try {
+          const jsonMatch = resultText.match(/\{[\s\S]*\}/);
 
-          if (parsed.tool === 'fetch_web_page' && parsed.url) {
-            console.log('🌐 [Tool Calling] 웹 페치 진행 중... URL:', parsed.url);
-            externalData = await fetchWebPage(parsed.url);
-          } else if (parsed.tool === 'tavily_search' && parsed.query) {
-            console.log('🔍 [Tavily MCP/Tool] 실시간 웹 검색 진행 중... Query:', parsed.query);
-            const tavilyRes = await searchTavily(parsed.query);
-            if (tavilyRes) externalData = tavilyRes;
-          } else if (parsed.tool === 'list_directory') {
-            console.log('📁 [MCP] 디렉토리 목록 조회 중...');
-            const mcpRes = await callMcpTool('list_directory', { path: parsed.path || '.' });
-            if (mcpRes) externalData = mcpRes;
-          } else if (parsed.tool === 'read_file') {
-            console.log('📄 [MCP] 파일 읽는 중... File:', parsed.path);
-            const mcpRes = await callMcpTool('read_file', { path: parsed.path });
-            if (mcpRes) externalData = mcpRes;
-          } else if (parsed.tool === 'github_mcp' && useGithubMcp) {
-            console.log('🐙 [GitHub MCP] 연동 실행 중...');
-            const githubClient = await initGitHubMCP();
-            externalData = "[GitHub MCP 연결 완료]: GitHub 데이터 조회가 정상 처리되었습니다.";
-            await githubClient.close();
-          } else if (parsed.tool === 'notion_mcp' && useNotionMcp) {
-            console.log('📝 [Notion MCP] 연동 실행 중...');
-            const notionClient = await initNotionMCP();
-            
-            externalData = "[Notion MCP 연결 완료]: Notion 문서 데이터 조회가 정상 처리되었습니다.";
-            await notionClient.close();
+          if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[0]);
+
+            if (parsed.tool === 'fetch_web_page' && parsed.url) {
+              console.log(
+                '🌐 [Tool Calling] 웹 페치 진행 중... URL:',
+                parsed.url
+              );
+              const webRes = await fetchWebPage(parsed.url);
+              if (webRes) externalData = webRes;
+            } else if (parsed.tool === 'tavily_search' && parsed.query) {
+              console.log(
+                '🔍 [Tavily MCP/Tool] 실시간 웹 검색 진행 중... Query:',
+                parsed.query
+              );
+              const tavilyRes = await searchTavily(parsed.query);
+              if (tavilyRes) externalData = tavilyRes;
+            } else if (parsed.tool === 'list_directory') {
+              console.log('📁 [MCP] 디렉토리 목록 조회 중...');
+              const mcpRes = await callMcpTool('list_directory', {
+                path: parsed.path || '.',
+              });
+              if (mcpRes) externalData = mcpRes;
+            } else if (parsed.tool === 'read_file') {
+              console.log('📄 [MCP] 파일 읽는 중... File:', parsed.path);
+              const mcpRes = await callMcpTool('read_file', {
+                path: parsed.path,
+              });
+              if (mcpRes) externalData = mcpRes;
+            } else if (parsed.tool === 'github_mcp' && useGithubMcp) {
+              console.log('🐙 [GitHub MCP] 연동 실행 중...');
+              const githubClient = await initGitHubMCP();
+              externalData =
+                '[GitHub MCP 연결 완료]: GitHub 데이터 조회가 정상 처리되었습니다.';
+              await githubClient.close();
+            } else if (parsed.tool === 'notion_mcp' && useNotionMcp) {
+              console.log('📝 [Notion MCP] 연동 실행 중...');
+              const notionClient = await initNotionMCP();
+              externalData =
+                '[Notion MCP 연결 완료]: Notion 문서 데이터 조회가 정상 처리되었습니다.';
+              await notionClient.close();
+            }
           }
+        } catch (e) {
+          console.error('도구 응답 파싱 에러:', e);
         }
-      } catch (e) {
-        console.error('도구 응답 파싱 에러:', e);
       }
     }
 

@@ -15,15 +15,15 @@ app.add_middleware(
 )
 
 embeddings = HuggingFaceEmbeddings(model_name="jhgan/ko-sroberta-multitask")
-vectorstore = Chroma(persist_directory="./chroma_db", embedding_function=embeddings)
+vectorstore = Chroma(persist_directory="./chroma_db_B_300", embedding_function=embeddings) # 여기도 새 DB 검색하도록 바꿈
 
 class QueryRequest(BaseModel):
     query: str
 
 @app.post("/api/search")
 async def search_rag(request: QueryRequest):
-    # 유사도 기반 상위 3개 검색
-    results = vectorstore.similarity_search(request.query, k=3)
+    # 유사도 기반 상위 5개 검색
+    results = vectorstore.similarity_search(request.query, k=5)
     
     docs = []
     for doc in results:

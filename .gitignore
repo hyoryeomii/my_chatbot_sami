@@ -45,3 +45,10 @@ next-env.d.ts
 chroma_db/
 .chroma/
 *.sqlite3
+
+*.pdf
+chroma_db/
+rag_eval_result*.xlsx
+.env
+.env*
+__pycache__/

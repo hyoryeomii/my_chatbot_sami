@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { checkInput, blockedResponse, buildUserContent, wrapData, DATA_RULES, checkToolCall, GUARD_ON } from './guardrails';
 
 // 🕒 한국 시각(KST) 기준 날짜/요일 생성 함수
 function getKstDateString() {
@@ -288,37 +289,62 @@ export async function initNotionMCP() {
 }
 
 // 📄 [도구 6] FastAPI + ChromaDB RAG 검색 함수
-async function fetchRagContext(userQuery: string) {
-  try {
-    const ragRes = await fetch('http://127.0.0.1:8000/api/search', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: userQuery }),
-    });
+async function fetchRagContext(
+  userQuery: string
+): Promise<{ context: string; contexts: string[] }> {
+  const ragRes = await fetch('http://127.0.0.1:8000/api/search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: userQuery }),
+  });
 
-    if (ragRes.ok) {
-      const data = await ragRes.json();
-      if (data.results && data.results.length > 0) {
-        return data.results
-          .map((doc: { content: string; page: number; source: string }) => `[출처 파일: ${doc.source} (페이지 ${doc.page})]\n${doc.content}`)
-          .join('\n\n');
-      }
-    }
-  } catch (err) {
-    console.warn('FastAPI RAG 백엔드 연결 안 됨 (일반 대화 모드로 지속):', err);
+  if (!ragRes.ok) {
+    throw new Error(`RAG 검색 실패: ${ragRes.status}`);
   }
-  return '';
+
+  const data = await ragRes.json();
+
+  if (!Array.isArray(data.results)) {
+    throw new Error('RAG 검색 응답에 results 배열이 없습니다.');
+  }
+
+  const contexts: string[] = data.results.map(
+    (doc: { content: string; page: number; source: string }) => {
+      if (typeof doc.content !== 'string') {
+        throw new Error('RAG 검색 결과에 문서 내용이 없습니다.');
+      }
+
+      return (
+        `[출처 파일: ${doc.source} (페이지 ${doc.page})]\n` +
+        doc.content
+      );
+    }
+  );
+
+  return {
+    context: contexts.join('\n\n'),
+    contexts,
+  };
 }
 
 export async function POST(req: Request) {
   try {
     // 1. 프론트엔드에서 보낸 토글 상태 및 파라미터 수신
-    const { message, reasoningEffort, model, useGithubMcp, useNotionMcp } = await req.json();
+    const { message: rawMessage, reasoningEffort, model, useGithubMcp, useNotionMcp } = await req.json();
+
+    const guard = checkInput(rawMessage);
+    if (!guard.allowed) {
+      console.warn('🚧 [가드레일] 입력 차단:', guard.category, '/', guard.rule);
+      return blockedResponse(guard);
+    }
+    if (guard.masked.length) console.log('🚧 [가드레일] 마스킹:', guard.masked.join(', '));
+    const message = guard.sanitized;
+
     const selectedModel = model || '빠른 모델 플러스';
 
     const SAMIGPT_API_URL = process.env.SAMIGPT_API_URL || 'https://gpt.samitech.kr/api/llm';
-    const SAMIGPT_API_KEY = process.env.SAMIGPT_API_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjaGVjayI6ZmFsc2UsInVzZXJuYW1lIjoiZ3lmdWQ1MjE2IiwiZXhwIjo0OTQyOTQ1NzIxfQ.gGr6plsCOZkz-3FociJUsPSjH8E2SnGWPf6q0M8AY84';
-    const USER_COOKIE = process.env.USER_COOKIE || '__Host-next-auth.csrf-token-gpt=db7ee97142721316dcdd2e2e3015282f29289e14f3b4dc8125cbea74a818ad91%7C27a14d937d24e3890abe56455c4206cae332e895e2b251e9d55aae63adc8be38; __Secure-next-auth.callback-url-gpt=http%3A%2F%2Flocalhost%3A3000; __Secure-next-auth.session-token-gpt=eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..QoP6GSzrpFrpIyCi.STcMukaN7-I06BZc9ZdNQNaPUruL1fi1sQHjWpedVUiUgKv-tzwarqzLMDeD3s6Sk11VFVqjNNsiSXU2XwRySKZzSm_pjKrXJZuy3yFiUCK_DPRnd4VNxi2Ytj8HRMBXsJXZOX1XbbNjUkKdmwu6K6f37xK2XUeQHYPrY9k-4Tj7ACIaHUdBHrjI2dXRTnHi2dOecm_WL5WdaUh0VJkOiE4g4CZDbNad_WXNaIL_-LDMu9BY8Vw1kzkHncXpSyYG6JDz5XIC-RnklKl0fe-ATDFuEs3BiwSqllq9AsuDNenDAaieep39tO6wdxUFDP6KdT57uxX3-jsYE23cjyHsvZ4d_PYvVkgJlJdqbS--I2_MUwpTLTnDm9UxtGzpLAmpi-8jn5cEZKiTLL7RHphVjPG32mTP7nIxIprD2ujcRGvd5jfBewSkaPsN8tBTEXZXnM6G8aFzz1X-n28gPoQzK1ymrP0bX81KablBvqy0CY9jlcq5q_6Vqy1SeP7mw50Qji76abBaIXaZTve98okvU8XlrCG4tnmE1dxOMxRJPT8r8evlBY0j5BNbiDXQzNGjUJ17wayTaVhmczYON9p6dFTO0bHiXrG7DUXvT3LzgwDHnnZe4uD8_shdl83QyDlFuT50rhB5AnjVwUEnscf8NJjtFEsqAibpUiaOmZPYdag5ubRVnS_eXWfYWA9IsiHbPnS5ntbYcw_sPKHc3o0hjU_RZHbWoZVBM_d0OeTvsBTgRUiyZPNBUnPlsDsrTKAbY4k_NTApwd9ZXF3ACtW7njaSah32qzzxPA3G5p3ywbRkyNofwrodLArdg3yj6X9BWNM.2j3992k0toJ6Nhrcts5xXQ';
+    const SAMIGPT_API_KEY = process.env.SAMIGPT_API_KEY || '';
+    const USER_COOKIE = process.env.USER_COOKIE || '';
 
     const requestHeaders = {
       Accept: 'text/event-stream, application/json, */*',
@@ -335,7 +361,7 @@ export async function POST(req: Request) {
 
     // true: RAG 평가 모드(외부 도구 OFF)
     // false: 일반 사용 모드(외부 도구 ON)
-    const ragEvalOnly = true;
+    const ragEvalOnly = true; // 현재는 RAG 평가 모드로 고정. 추후 토글 가능하게 수정 예정
     let externalData = '';
 
     if (ragEvalOnly) {
@@ -395,6 +421,11 @@ ${useGithubMcp ? '5. If user asks about GitHub commits, repositories, or issues:
 
           if (jsonMatch) {
             const parsed = JSON.parse(jsonMatch[0]);
+            const toolGuard = checkToolCall(parsed);
+            if (!toolGuard.allowed) {
+              console.warn('🚧 [가드레일] 도구 차단:', toolGuard.category, '/', toolGuard.rule);
+              return blockedResponse(toolGuard);
+            }
 
             if (parsed.tool === 'fetch_web_page' && parsed.url) {
               console.log(
@@ -442,7 +473,10 @@ ${useGithubMcp ? '5. If user asks about GitHub commits, repositories, or issues:
       }
     }
 
-    const ragContext = await ragContextPromise;
+    const {
+      context: ragContext,
+      contexts: retrievedContexts,
+    } = await ragContextPromise;
     const todayKst = getKstDateString();
 
     const baseSystemPrompt = `너는 사내 문서 검색과 실시간 정보 조회가 가능한 친절하고 똑똑한 AI 비서이다.
@@ -456,16 +490,14 @@ ${useGithubMcp ? '5. If user asks about GitHub commits, repositories, or issues:
 전체 답변의 길이는 가독성과 빠른 응답을 위해 공백 포함 2,000자 이내로 간결하게 작성해라.
 
 [답변 출력 구조]:
-### 1. 상세 설명
-- 외부 데이터 기반의 실제 상세 내용(온도, 날씨 상태, 뉴스 등)을 친절하게 설명한다.
+사내 문서 질문에는 질문이 요구한 범위만 간결하게 답한다.
+상세 설명·요약 표·결론을 반드시 모두 작성할 필요는 없다.
 
-### 2. 핵심 요약
-- 핵심 데이터를 마크다운 표(| 항목 | 내용 |) 형식으로 정리한다.
+질문에 직접 답하는 내용을 먼저 쓰고, 해당 출처를 표시한다.
+일부만 확인되면 확인된 내용과 확인되지 않는 내용을 구분한다.
 
-### 3. 결론
-- 전체 내용을 2~3줄로 깔끔하게 요약 정리한다.
-
-단, 아래 [참고 문서 사용 규칙]에 따라 답이 문서에서 확인되지 않는 경우에는 이 구조를 쓰지 않고 1~2문장으로 답한다.`;
+문서에 적힌 항목 번호를 시간 순서나 필수 단계로 해석하지 않는다.
+문서에 없는 선행 조건, 의무, 순서를 추가하지 않는다.`;
 
 const groundingRules = `[참고 문서 사용 규칙]:
 1. 질문이 사내 문서(회사소개서, 재난현장 표준작전절차(SOP), IT기술교육 체계수립)나 사내 업무 절차·규정에 관한 것이면, [참고 문서]에 적힌 내용만 근거로 답한다. 일반 지식이나 추측으로 내용을 보충하지 않는다.
@@ -476,7 +508,9 @@ const groundingRules = `[참고 문서 사용 규칙]:
 6. 문서에 명시되지 않은 순서, 우선순위, 단계 번호, 포함 관계를 만들지 않는다. 문서의 목록·순서·절차를 원래 적용 상황과 다른 상황의 근거로 쓰지 않으며, 인용할 때는 그 조항이 어떤 상황(누가, 언제)에 대한 규정인지 함께 밝힌다.
 7. 서로 다른 절의 내용을 하나의 목록·절차·체계로 묶어 질문의 답처럼 제시하지 않는다. 목차나 표 제목처럼 제목만 있는 부분을 내용의 근거로 쓰지 않고, 문서에 없는 예시를 덧붙이지 않는다.
 8. 출처는 [출처 파일: 파일명 (페이지 N)] 표시에 있는 파일명과 페이지만 쓰고, 해당 내용이 실제로 그 조각에 있을 때만 인용한다. 문서에 없는 법령이나 규정을 근거로 들지 않는다.
-9. 표 셀 안에서 <br> 태그를 쓰지 않는다. 여러 항목은 쉼표나 가운뎃점(·)으로 구분한다. `;
+9. 표 셀 안에서 <br> 태그를 쓰지 않는다. 여러 항목은 쉼표나 가운뎃점(·)으로 구분한다.
+10. 문서의 선택 관계, 의무 여부, 적용 대상과 시점을 그대로 유지한다. ‘또는·하거나’를 ‘그리고·모두·병행해야 한다’로 바꾸지 않는다. 서로 다른 절을 합쳐 새로운 순서나 즉시 수행 절차를 만들지 않는다.
+`;
 
     const finalMessages = [{ role: 'system', content: baseSystemPrompt }];
 
@@ -490,7 +524,7 @@ const groundingRules = `[참고 문서 사용 규칙]:
     if (externalData) {
       finalMessages.push({
         role: 'system',
-        content: `[수집된 외부 데이터 (웹검색/MCP)]:\n${externalData}`,
+        content: `[수집된 외부 데이터 (웹검색/MCP)]:\n${wrapData('외부데이터', externalData)}`,
       });
     }
 
@@ -498,7 +532,11 @@ const groundingRules = `[참고 문서 사용 규칙]:
     
     finalMessages.push({ role: 'system', content: groundingRules });
 
-    finalMessages.push({ role: 'user', content: message });
+    const userContent = buildUserContent(message);
+    if (userContent !== message || externalData) {
+      finalMessages.push({ role: 'system', content: DATA_RULES });
+    }
+    finalMessages.push({ role: 'user', content: userContent });
 
 
 
@@ -520,18 +558,38 @@ const groundingRules = `[참고 문서 사용 규칙]:
       return NextResponse.json({ error: '사미GPT API 오류' }, { status: streamResponse.status });
     }
 
-    return createSSEStreamResponse(streamResponse.body);
+    return createSSEStreamResponse(
+      streamResponse.body,
+      ragEvalOnly ? retrievedContexts : undefined
+    );
   } catch (error) {
     console.error('백엔드 연동 에러:', error);
     return NextResponse.json({ error: '서버 내부 통신 실패' }, { status: 500 });
   }
 }
 
-function createSSEStreamResponse(body: ReadableStream<Uint8Array>) {
+function createSSEStreamResponse(
+  body: ReadableStream<Uint8Array>,
+  retrievedContexts?: string[]
+) {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
 
   const transformStream = new TransformStream({
+    start(controller) {
+      if (retrievedContexts !== undefined) {
+        controller.enqueue(
+          encoder.encode(
+            JSON.stringify({
+              reasoning: '',
+              content: '',
+              retrieved_contexts: retrievedContexts,
+            }) + '\n'
+          )
+        );
+      }
+    },
+
     async transform(chunk, controller) {
       const text = decoder.decode(chunk);
       const lines = text.split('\n');

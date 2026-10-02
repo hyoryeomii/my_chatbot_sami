@@ -154,7 +154,16 @@ def ask_api(q):
     """route.ts 응답: 한 줄마다 {"reasoning": "...", "content": "..."} (스트리밍) → content만 이어붙임"""
     import requests
     t = time.time()
-    r = requests.post(API_URL, json={API_Q_KEY: q}, timeout=300, stream=True)
+    r = requests.post(
+        API_URL,
+        json={
+            API_Q_KEY: q,
+            "model": "생각하는 모델 플러스",
+            "reasoningEffort": "medium",
+        },
+        timeout=300,
+        stream=True,
+    )
     if r.status_code != 200:
         return f"[API 오류 {r.status_code}] {r.text[:200]}", time.time() - t
     parts, raw = [], []
@@ -285,7 +294,7 @@ def main():
                          "답변 PASS율(정답있음/전제오류)": f'{d["자동 판정"].str.startswith("PASS").mean():.0%}'})
     sm = pd.DataFrame(summ)
 
-    out = "실험C_300자_k5_도구off.xlsx"
+    out = "실험D_300자_k5_생각하는모델플러스_도구off.xlsx"
     with pd.ExcelWriter(out, engine="openpyxl") as w:
         df.to_excel(w, sheet_name="질문별 결과", index=False)
         sm.to_excel(w, sheet_name="요약 지표", index=False)
